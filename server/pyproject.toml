@@ -1,0 +1,47 @@
+[project]
+name = "atlas-argus-server"
+version = "0.1.0"
+description = "Atlas Argus backend — FastAPI + SQLAlchemy + Postgres, mirroring the frontend domain contracts."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.7",
+    "argon2-cffi>=23.1",
+    "alembic>=1.13",
+    # Document ingestion. Deliberately not PyMuPDF/fitz: it is AGPL-3.0 or a
+    # paid commercial licence. These four are permissive (BSD-3 / MIT /
+    # Apache-2.0 / MIT-CMU). pdf2image and pytesseract are thin wrappers that
+    # invoke the poppler-utils and tesseract-ocr system binaries as
+    # subprocesses; both must be installed in the image and in CI.
+    "pypdf>=4.0",
+    "pdf2image>=1.17",
+    "pytesseract>=0.3.10",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    # Reads the maintained production compose example so the single-worker
+    # ingestion invariant is asserted rather than assumed.
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atlas_argus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 96
+src = ["src", "tests"]

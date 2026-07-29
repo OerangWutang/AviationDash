@@ -1,0 +1,122 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Every job is verification-only. Keep the automatically issued token read-only
+# even if a repository or organization later broadens its default permissions.
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas_argus_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas -d atlas_argus_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Document ingestion shells out to these. Without them the OCR tests
+      # skip rather than fail, so CI would go green on a build that cannot
+      # read a scanned page — the version echo makes the drift visible,
+      # because OCR output changes between Tesseract releases.
+      - name: Install PDF and OCR system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y poppler-utils tesseract-ocr
+          tesseract --version
+          pdftoppm -v
+      - run: python -m venv server/.venv
+      - run: server/.venv/bin/python -m pip install -r server/requirements.lock.txt
+      - run: server/.venv/bin/python -m pip install -e "server[dev]"
+      - run: server/.venv/bin/ruff check server/src server/tests
+      - run: cd server && .venv/bin/python -m pytest -q
+        env:
+          ATLAS_ARGUS_TEST_DATABASE_URL: postgresql+psycopg://atlas:atlas@localhost:5434/atlas_argus_test
+      - run: bash -n scripts/*.sh docker/postgres/init-runtime-role.sh
+      - run: bash scripts/test_ops.sh
+      - run: scripts/validate_release_package.sh
+      - name: Validate production environment fixture
+        run: scripts/validate_production_env.sh
+        env:
+          ATLAS_ARGUS_ENV: production
+          ATLAS_ARGUS_DATABASE_URL: postgresql+psycopg://atlas_app:generated-runtime-password@db:5432/atlas_argus
+          ATLAS_ARGUS_MIGRATION_DATABASE_URL: postgresql+psycopg://atlas_owner:generated-migration-password@db:5432/atlas_argus
+          ATLAS_ARGUS_RUNTIME_DB_PASSWORD: generated-runtime-password
+          ATLAS_ARGUS_MIGRATION_DB_PASSWORD: generated-migration-password
+          ATLAS_ARGUS_METRICS_TOKEN: generated-metrics-token
+          ATLAS_ARGUS_FORWARDED_ALLOW_IPS: 10.0.0.10
+          ATLAS_ARGUS_BASE_URL: https://atlas.example.test
+          ATLAS_ARGUS_BACKUP_DIR: backups
+          ATLAS_ARGUS_BACKUP_RETENTION_DAYS: "30"
+          ATLAS_ARGUS_BACKUP_DB_USER: atlas_owner
+          ATLAS_ARGUS_BACKUP_OFFSITE_URI: remote:atlas-argus
+          ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES: "262144"
+          ATLAS_ARGUS_MAX_PACKET_ENTRIES: "250"
+          ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES: "2097152"
+          ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES: "524288"
+          ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES: "3145728"
+      - name: Validate launch-gate fixture
+        env:
+          ATLAS_ARGUS_ENV: production
+          ATLAS_ARGUS_DATABASE_URL: postgresql+psycopg://atlas_app:generated-runtime-password@db:5432/atlas_argus
+          ATLAS_ARGUS_MIGRATION_DATABASE_URL: postgresql+psycopg://atlas_owner:generated-migration-password@db:5432/atlas_argus
+          ATLAS_ARGUS_RUNTIME_DB_PASSWORD: generated-runtime-password
+          ATLAS_ARGUS_MIGRATION_DB_PASSWORD: generated-migration-password
+          ATLAS_ARGUS_METRICS_TOKEN: generated-metrics-token
+          ATLAS_ARGUS_FORWARDED_ALLOW_IPS: 10.0.0.10
+          ATLAS_ARGUS_BASE_URL: https://atlas.example.test
+          ATLAS_ARGUS_BACKUP_DIR: backups
+          ATLAS_ARGUS_BACKUP_RETENTION_DAYS: "30"
+          ATLAS_ARGUS_BACKUP_DB_USER: atlas_owner
+          ATLAS_ARGUS_BACKUP_OFFSITE_URI: remote:atlas-argus
+          ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES: "262144"
+          ATLAS_ARGUS_MAX_PACKET_ENTRIES: "250"
+          ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES: "2097152"
+          ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES: "524288"
+          ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES: "3145728"
+        run: |
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          printf 'CI security review fixture: approved.\n' > "$tmp/security.md"
+          printf 'CI evidence review fixture: approved.\n' > "$tmp/evidence.md"
+          printf 'CI restore drill fixture: passed.\n' > "$tmp/restore.md"
+          export ATLAS_ARGUS_SECURITY_REVIEW_SIGNOFF="$tmp/security.md"
+          export ATLAS_ARGUS_EVIDENCE_REVIEW_SIGNOFF="$tmp/evidence.md"
+          export ATLAS_ARGUS_RESTORE_DRILL_RECORD="$tmp/restore.md"
+          scripts/launch_gate.sh
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg DEMO_LOGINS= .

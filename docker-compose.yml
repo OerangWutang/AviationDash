@@ -1,0 +1,47 @@
+services:
+  # Full stack: `docker compose up -d` → http://localhost:8100 (sign in with
+  # the demo credentials from the README). For production-style settings set
+  # ATLAS_ARGUS_ENV=production plus real secrets — the api refuses to boot on
+  # dev defaults.
+  api:
+    build: .
+    # Reaps Poppler/Tesseract processes orphaned by an extraction timeout —
+    # see the production compose file for why.
+    init: true
+    ports:
+      - "8100:8100"
+    environment:
+      ATLAS_ARGUS_DATABASE_URL: postgresql+psycopg://atlas:${ATLAS_ARGUS_DB_PASSWORD:-atlas}@db:5432/atlas_argus
+      ATLAS_ARGUS_ENV: ${ATLAS_ARGUS_ENV:-dev}
+      ATLAS_ARGUS_COOKIE_SECURE: ${ATLAS_ARGUS_COOKIE_SECURE:-}
+      ATLAS_ARGUS_SEED_PASSWORD: ${ATLAS_ARGUS_SEED_PASSWORD:-}
+      ATLAS_ARGUS_CORS_ORIGINS: ${ATLAS_ARGUS_CORS_ORIGINS:-}
+      ATLAS_ARGUS_FORWARDED_ALLOW_IPS: ${ATLAS_ARGUS_FORWARDED_ALLOW_IPS:-127.0.0.1}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/api/health', timeout=2).read()\""]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: ${ATLAS_ARGUS_DB_PASSWORD:-atlas}
+      POSTGRES_DB: atlas_argus
+    ports:
+      - "5434:5432"
+    volumes:
+      - atlas-argus-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_argus"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+volumes:
+  atlas-argus-pgdata:

@@ -1,0 +1,18 @@
+# Replace atlas.example.com and the email address before use.
+{
+  email ops@example.com
+}
+
+atlas.example.com {
+  encode zstd gzip
+
+  # The production hostname is HTTPS-only. Keep this scoped to the selected
+  # host (no includeSubDomains) so adopting the example cannot unexpectedly
+  # affect unrelated subdomains.
+  header Strict-Transport-Security "max-age=31536000"
+
+  reverse_proxy api:8100 {
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Forwarded-Host {host}
+  }
+}

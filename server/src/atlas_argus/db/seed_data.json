@@ -1,0 +1,884 @@
+{
+  "caseFile": {
+    "id": "case-3407",
+    "name": "Colgan Air Flight 3407",
+    "aircraft": "Bombardier DHC-8-402 Q400 (N200WQ)",
+    "accidentDate": "2009-02-12",
+    "location": "Clarence Center, New York",
+    "matterType": "Accident litigation / investigation review",
+    "status": "Active — evidence review",
+    "docketRef": "NTSB DCA09MA027"
+  },
+  "reviewers": [
+    {
+      "id": "rev-okafor",
+      "name": "Miriam Okafor",
+      "role": "Senior Aviation Counsel"
+    },
+    {
+      "id": "rev-reeves",
+      "name": "Daniel Reeves",
+      "role": "Accident Reconstruction Expert"
+    },
+    {
+      "id": "rev-natarajan",
+      "name": "Priya Natarajan",
+      "role": "Claims Reviewer"
+    },
+    {
+      "id": "rev-lindqvist",
+      "name": "Tomas Lindqvist",
+      "role": "Safety Investigator"
+    }
+  ],
+  "sources": [
+    {
+      "id": "src-fdr",
+      "caseId": "case-3407",
+      "title": "FDR Data Readout — Group Chairman's Factual Report",
+      "type": "flight_recorder",
+      "origin": "NTSB Vehicle Recorders Division",
+      "custodian": "NTSB public docket",
+      "docketRef": "DCA09MA027, Ex. 10-A",
+      "ingestedAt": "2026-05-02T09:14:00Z",
+      "sha256": "7c1e9a4d0b6f2e8a5d3c1f7b9e0a2c4d6f8b1a3e5c7d9f0b2a4c6e8d1f3a5b7c",
+      "privilegeStatus": "public",
+      "custody": [
+        {
+          "at": "2009-02-13T14:20:00Z",
+          "actor": "NTSB on-scene investigator",
+          "action": "FDR recovered from wreckage; sealed and tagged"
+        },
+        {
+          "at": "2009-02-14T18:05:00Z",
+          "actor": "NTSB Vehicle Recorders Laboratory",
+          "action": "Recorder received; data downloaded under lab protocol"
+        },
+        {
+          "at": "2009-06-01T00:00:00Z",
+          "actor": "NTSB docket management",
+          "action": "Certified factual report released to public docket"
+        },
+        {
+          "at": "2026-05-02T09:14:00Z",
+          "actor": "Tomas Lindqvist",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-cvr",
+      "caseId": "case-3407",
+      "title": "CVR Transcript — Group Chairman's Factual Report",
+      "type": "flight_recorder",
+      "origin": "NTSB Vehicle Recorders Division",
+      "custodian": "NTSB public docket",
+      "docketRef": "DCA09MA027, Ex. 12-B",
+      "ingestedAt": "2026-05-02T09:21:00Z",
+      "sha256": "3f8b2c6e1a9d4f7b0c5e8a2d6f1b9c3e7a0d4f8b2c6e1a5d9f3b7c0e4a8d2f6b",
+      "privilegeStatus": "public",
+      "custody": [
+        {
+          "at": "2009-02-13T14:25:00Z",
+          "actor": "NTSB on-scene investigator",
+          "action": "CVR recovered from wreckage; sealed and tagged"
+        },
+        {
+          "at": "2009-05-12T00:00:00Z",
+          "actor": "CVR Group (all parties present)",
+          "action": "Transcript reviewed and certified by CVR group"
+        },
+        {
+          "at": "2026-05-02T09:21:00Z",
+          "actor": "Tomas Lindqvist",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-ntsb",
+      "caseId": "case-3407",
+      "title": "NTSB Aircraft Accident Report AAR-10/01",
+      "type": "official_report",
+      "origin": "National Transportation Safety Board",
+      "custodian": "NTSB public docket",
+      "docketRef": "NTSB/AAR-10/01",
+      "ingestedAt": "2026-05-02T09:30:00Z",
+      "sha256": "a94f2d7c1e8b5a3f0d6c9e2b7f4a1d8c5e0b3f6a9d2c7e4b1f8a5d0c3e6b9f2a",
+      "privilegeStatus": "public",
+      "custody": [
+        {
+          "at": "2010-02-02T00:00:00Z",
+          "actor": "NTSB Board",
+          "action": "Final report adopted and published"
+        },
+        {
+          "at": "2026-05-02T09:30:00Z",
+          "actor": "Tomas Lindqvist",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-depo-witness",
+      "caseId": "case-3407",
+      "title": "Deposition Transcript — R. Hollis (ground witness)",
+      "type": "deposition",
+      "origin": "Plaintiffs' counsel — consolidated discovery",
+      "custodian": "Case file / litigation support",
+      "docketRef": "Dep. Ex. 47",
+      "ingestedAt": "2026-05-06T15:42:00Z",
+      "sha256": "5b0e3a8d2f7c1b6e9a4d0f5c8b3e7a2d6f1c9b4e0a5d8f2c7b1e6a3d9f4c0b5e",
+      "privilegeStatus": "confidential",
+      "custody": [
+        {
+          "at": "2026-03-18T00:00:00Z",
+          "actor": "Court reporter (certified)",
+          "action": "Deposition taken and transcript certified"
+        },
+        {
+          "at": "2026-04-02T00:00:00Z",
+          "actor": "Litigation support vendor",
+          "action": "Transcript produced under protective order"
+        },
+        {
+          "at": "2026-05-06T15:42:00Z",
+          "actor": "Priya Natarajan",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-depo-ops",
+      "caseId": "case-3407",
+      "title": "Deposition Transcript — K. Braddock (Crew Scheduling Manager)",
+      "type": "deposition",
+      "origin": "Defense discovery — operator personnel",
+      "custodian": "Case file / litigation support",
+      "docketRef": "Dep. Ex. 52",
+      "ingestedAt": "2026-05-06T15:55:00Z",
+      "sha256": "e2c7b4f1a8d5e0c3b9f6a2d7e4c1b8f5a0d3e9c6b2f7a4d1e8c5b0f3a6d9e2c7",
+      "privilegeStatus": "confidential",
+      "custody": [
+        {
+          "at": "2026-03-25T00:00:00Z",
+          "actor": "Court reporter (certified)",
+          "action": "Deposition taken and transcript certified"
+        },
+        {
+          "at": "2026-05-06T15:55:00Z",
+          "actor": "Priya Natarajan",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-crew-records",
+      "caseId": "case-3407",
+      "title": "Crew Scheduling & Commuting Records (extract)",
+      "type": "operational_record",
+      "origin": "Operator — produced in discovery",
+      "custodian": "Case file / litigation support",
+      "docketRef": "Prod. COL-004417–004463",
+      "ingestedAt": "2026-05-08T10:05:00Z",
+      "sha256": "b8d1f4a7c0e3b6d9f2a5c8e1b4d7f0a3c6e9b2d5f8a1c4e7b0d3f6a9c2e5b8d1",
+      "privilegeStatus": "confidential",
+      "custody": [
+        {
+          "at": "2026-02-10T00:00:00Z",
+          "actor": "Operator records custodian",
+          "action": "Records produced with custodian declaration"
+        },
+        {
+          "at": "2026-05-08T10:05:00Z",
+          "actor": "Priya Natarajan",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-ops-brief",
+      "caseId": "case-3407",
+      "title": "Company Preliminary Event Brief (13 Feb 2009)",
+      "type": "operational_record",
+      "origin": "Operator — internal, produced in discovery",
+      "custodian": "Case file / litigation support",
+      "docketRef": "Prod. COL-000212",
+      "ingestedAt": "2026-05-08T10:12:00Z",
+      "sha256": "9a3c6e0b4d8f1a5c9e2b6d0f4a8c1e5b9d3f7a0c4e8b2d6f1a5c9e3b7d0f4a8c",
+      "privilegeStatus": "confidential",
+      "custody": [
+        {
+          "at": "2009-02-13T21:00:00Z",
+          "actor": "Operator duty office",
+          "action": "Preliminary event brief issued internally"
+        },
+        {
+          "at": "2026-02-10T00:00:00Z",
+          "actor": "Operator records custodian",
+          "action": "Produced in discovery (privilege review: not withheld)"
+        },
+        {
+          "at": "2026-05-08T10:12:00Z",
+          "actor": "Priya Natarajan",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-wx-expert",
+      "caseId": "case-3407",
+      "title": "Meteorological Reconstruction — Dr. E. Camara (retained expert)",
+      "type": "expert_report",
+      "origin": "Retained consulting expert",
+      "custodian": "Counsel work files",
+      "docketRef": null,
+      "ingestedAt": "2026-05-09T11:20:00Z",
+      "sha256": "d4f7a0c3e6b9d2f5a8c1e4b7d0f3a6c9e2b5d8f1a4c7e0b3d6f9a2c5e8b1d4f7",
+      "privilegeStatus": "work_product",
+      "custody": [
+        {
+          "at": "2026-04-28T00:00:00Z",
+          "actor": "Dr. E. Camara",
+          "action": "Draft reconstruction delivered to counsel"
+        },
+        {
+          "at": "2026-05-09T11:20:00Z",
+          "actor": "Miriam Okafor",
+          "action": "Ingested; work-product designation applied on intake"
+        }
+      ]
+    },
+    {
+      "id": "src-memo",
+      "caseId": "case-3407",
+      "title": "Internal Litigation Strategy Memorandum — Training Exposure",
+      "type": "internal_memo",
+      "origin": "Counsel — internal work files",
+      "custodian": "Counsel work files",
+      "docketRef": null,
+      "ingestedAt": "2026-05-09T11:34:00Z",
+      "sha256": "1e5b8d2f6a9c3e7b0d4f8a1c5e9b3d7f0a4c8e2b6d9f3a7c1e5b8d2f6a0c4e8b",
+      "privilegeStatus": "attorney_client",
+      "custody": [
+        {
+          "at": "2026-05-05T00:00:00Z",
+          "actor": "Miriam Okafor",
+          "action": "Memorandum authored; attorney-client designation applied"
+        },
+        {
+          "at": "2026-05-09T11:34:00Z",
+          "actor": "Miriam Okafor",
+          "action": "Ingested into Atlas Argus under privilege designation"
+        }
+      ]
+    },
+    {
+      "id": "src-training",
+      "caseId": "case-3407",
+      "title": "Q400 Training Program Approval Records (FAA/POI)",
+      "type": "operational_record",
+      "origin": "FAA — certificate management office",
+      "custodian": "Case file / litigation support",
+      "docketRef": "Prod. FAA-000988–001042",
+      "ingestedAt": "2026-05-12T08:50:00Z",
+      "sha256": "6c9e2b5d8f1a4c7e0b3d6f9a2c5e8b1d4f7a0c3e6b9d2f5a8c1e4b7d0f3a6c9e",
+      "privilegeStatus": "public",
+      "custody": [
+        {
+          "at": "2026-01-22T00:00:00Z",
+          "actor": "FAA FOIA office",
+          "action": "Records released under FOIA request"
+        },
+        {
+          "at": "2026-05-12T08:50:00Z",
+          "actor": "Tomas Lindqvist",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    },
+    {
+      "id": "src-metar",
+      "caseId": "case-3407",
+      "title": "Surface Weather Observations, KBUF — 12 Feb 2009",
+      "type": "weather_data",
+      "origin": "National Weather Service archive",
+      "custodian": "NTSB public docket",
+      "docketRef": "DCA09MA027, Ex. 5-C",
+      "ingestedAt": "2026-05-12T08:58:00Z",
+      "sha256": "0b4d8f2a6c9e3b7d1f5a8c2e6b0d4f8a1c5e9b3d7f2a6c0e4b8d1f5a9c3e7b0d",
+      "privilegeStatus": "public",
+      "custody": [
+        {
+          "at": "2026-05-12T08:58:00Z",
+          "actor": "Tomas Lindqvist",
+          "action": "Ingested into Atlas Argus; SHA-256 computed and verified"
+        }
+      ]
+    }
+  ],
+  "claims": [
+    {
+      "id": "clm-a1",
+      "caseId": "case-3407",
+      "text": "The stick shaker activated at 22:16:27 EST, as the aircraft slowed through 131 knots on final approach.",
+      "sourceDocumentId": "src-fdr",
+      "pageRef": "p. 44, parameter plot 12",
+      "quote": "Stick shaker discrete transitions to ACTIVE at 22:16:27.4 EST; computed airspeed 131 kt; flaps selected 10.",
+      "confidence": 0.97,
+      "evidenceQuality": "primary",
+      "status": "unreviewed",
+      "privilegeStatus": "public",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:02:00Z",
+      "relatedConflictIds": [
+        "cf-1"
+      ]
+    },
+    {
+      "id": "clm-b1",
+      "caseId": "case-3407",
+      "text": "The stall warning began earlier in the approach sequence, well before the final approach fix.",
+      "sourceDocumentId": "src-depo-witness",
+      "pageRef": "112:8–113:2",
+      "quote": "I heard the engines surge and what sounded like a warning horn a good while before the sound stopped. It seemed like a long time, not seconds.",
+      "confidence": 0.4,
+      "evidenceQuality": "uncorroborated",
+      "status": "unreviewed",
+      "privilegeStatus": "confidential",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:02:00Z",
+      "relatedConflictIds": [
+        "cf-1"
+      ]
+    },
+    {
+      "id": "clm-a2",
+      "caseId": "case-3407",
+      "text": "The aircraft encountered severe icing on approach that materially degraded aerodynamic performance.",
+      "sourceDocumentId": "src-cvr",
+      "pageRef": "p. 27, 22:07:14–22:07:26",
+      "quote": "FO: “…it's lots of ice.” CAPT: “Oh yeah, that's the most I've seen — most ice I've seen on the leading edges in a long time.”",
+      "confidence": 0.55,
+      "evidenceQuality": "secondary",
+      "status": "unreviewed",
+      "privilegeStatus": "public",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:05:00Z",
+      "relatedConflictIds": [
+        "cf-2"
+      ]
+    },
+    {
+      "id": "clm-b2",
+      "caseId": "case-3407",
+      "text": "Icing conditions were light to moderate; ice accretion caused minimal performance degradation and did not precipitate the stall.",
+      "sourceDocumentId": "src-ntsb",
+      "pageRef": "p. 155, Finding 26",
+      "quote": "The minimal aircraft performance degradation resulting from ice accumulation did not affect the flight crew's ability to fly and control the airplane.",
+      "confidence": 0.9,
+      "evidenceQuality": "primary",
+      "status": "unreviewed",
+      "privilegeStatus": "public",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:05:00Z",
+      "relatedConflictIds": [
+        "cf-2"
+      ]
+    },
+    {
+      "id": "clm-a3",
+      "caseId": "case-3407",
+      "text": "Both pilots were substantially fatigued, having commuted overnight and rested only in the crew lounge before the accident flight.",
+      "sourceDocumentId": "src-crew-records",
+      "pageRef": "extract p. 7 (COL-004423)",
+      "quote": "F/O inbound jumpseat SEA–MEM–EWR arriving 06:23L 12 Feb; no hotel or rest-facility record for 11–12 Feb. CAPT CrewTrac log-ins 03:10L and 07:26L from EWR crew room terminal.",
+      "confidence": 0.7,
+      "evidenceQuality": "corroborated",
+      "status": "unreviewed",
+      "privilegeStatus": "confidential",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:09:00Z",
+      "relatedConflictIds": [
+        "cf-3"
+      ]
+    },
+    {
+      "id": "clm-b3",
+      "caseId": "case-3407",
+      "text": "Crew rest complied with all regulatory requirements, and fatigue was not a factor in crew performance.",
+      "sourceDocumentId": "src-depo-ops",
+      "pageRef": "88:14–89:6",
+      "quote": "Every pairing complied with Part 121 rest minimums. Where a crew member chooses to sleep before report time is not something the company controls or records.",
+      "confidence": 0.5,
+      "evidenceQuality": "secondary",
+      "status": "unreviewed",
+      "privilegeStatus": "confidential",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:09:00Z",
+      "relatedConflictIds": [
+        "cf-3"
+      ]
+    },
+    {
+      "id": "clm-a4",
+      "caseId": "case-3407",
+      "text": "The autopilot remained engaged until stall-warning onset and disengaged automatically when the stick shaker activated.",
+      "sourceDocumentId": "src-fdr",
+      "pageRef": "p. 46, parameter plot 14",
+      "quote": "AP engage discrete TRUE through 22:16:27; AP disengage discrete coincident with stick shaker activation at 22:16:27.4.",
+      "confidence": 0.96,
+      "evidenceQuality": "primary",
+      "status": "supported",
+      "privilegeStatus": "public",
+      "reportEligibility": "eligible",
+      "reviewer": "Miriam Okafor",
+      "updatedAt": "2026-06-28T14:32:00Z",
+      "relatedConflictIds": [
+        "cf-4"
+      ]
+    },
+    {
+      "id": "clm-b4",
+      "caseId": "case-3407",
+      "text": "The crew manually disconnected the autopilot and hand-flew the final approach segment prior to the stall warning.",
+      "sourceDocumentId": "src-ops-brief",
+      "pageRef": "p. 1, ¶3",
+      "quote": "Initial indications are that the crew was hand-flying the approach in icing conditions at the time of the upset.",
+      "confidence": 0.3,
+      "evidenceQuality": "uncorroborated",
+      "status": "superseded",
+      "privilegeStatus": "confidential",
+      "reportEligibility": "excluded",
+      "reviewer": "Miriam Okafor",
+      "updatedAt": "2026-06-28T14:32:00Z",
+      "relatedConflictIds": [
+        "cf-4"
+      ]
+    },
+    {
+      "id": "clm-a5",
+      "caseId": "case-3407",
+      "text": "The operator's internal review concluded that stall-recovery and tailplane-icing training for Q400 crews was inadequate.",
+      "sourceDocumentId": "src-memo",
+      "pageRef": "p. 3, §II",
+      "quote": "Our own training-department interviews suggest upset-recovery instruction on the Q400 was materially thinner than the proficiency standard we will be defending.",
+      "confidence": 0.6,
+      "evidenceQuality": "secondary",
+      "status": "unreviewed",
+      "privilegeStatus": "attorney_client",
+      "reportEligibility": "privileged",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:15:00Z",
+      "relatedConflictIds": [
+        "cf-5"
+      ]
+    },
+    {
+      "id": "clm-b5",
+      "caseId": "case-3407",
+      "text": "The crew training program complied with all FAR Part 121 requirements and was approved by the FAA principal operations inspector.",
+      "sourceDocumentId": "src-training",
+      "pageRef": "FAA-000991",
+      "quote": "The Q400 training curriculum, revision 4, is approved by the principal operations inspector effective 14 May 2008.",
+      "confidence": 0.75,
+      "evidenceQuality": "corroborated",
+      "status": "unreviewed",
+      "privilegeStatus": "public",
+      "reportEligibility": "blocked_by_conflict",
+      "reviewer": null,
+      "updatedAt": "2026-05-20T13:15:00Z",
+      "relatedConflictIds": [
+        "cf-5"
+      ]
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "cf-1",
+      "caseId": "case-3407",
+      "claimAId": "clm-a1",
+      "claimBId": "clm-b1",
+      "conflictType": "timeline",
+      "severity": "critical",
+      "status": "unresolved",
+      "summary": "Stall-warning onset time: FDR discrete vs. ground-witness recollection",
+      "createdAt": "2026-06-02T10:11:00Z",
+      "decisionIds": [],
+      "claimADisposition": "disputed",
+      "claimBDisposition": "disputed"
+    },
+    {
+      "id": "cf-2",
+      "caseId": "case-3407",
+      "claimAId": "clm-a2",
+      "claimBId": "clm-b2",
+      "conflictType": "interpretation",
+      "severity": "high",
+      "status": "unresolved",
+      "summary": "Icing severity: crew's CVR remarks vs. NTSB performance finding",
+      "createdAt": "2026-06-02T10:18:00Z",
+      "decisionIds": [],
+      "claimADisposition": "disputed",
+      "claimBDisposition": "disputed"
+    },
+    {
+      "id": "cf-3",
+      "caseId": "case-3407",
+      "claimAId": "clm-a3",
+      "claimBId": "clm-b3",
+      "conflictType": "factual",
+      "severity": "high",
+      "status": "unresolved",
+      "summary": "Crew fatigue: commuting/rest records vs. scheduling-manager testimony",
+      "createdAt": "2026-06-02T10:24:00Z",
+      "decisionIds": [],
+      "claimADisposition": "disputed",
+      "claimBDisposition": "disputed"
+    },
+    {
+      "id": "cf-4",
+      "caseId": "case-3407",
+      "claimAId": "clm-a4",
+      "claimBId": "clm-b4",
+      "conflictType": "factual",
+      "severity": "medium",
+      "status": "accepted_claim_a",
+      "summary": "Autopilot state at upset: FDR discretes vs. company preliminary brief",
+      "createdAt": "2026-06-02T10:31:00Z",
+      "decisionIds": [
+        "dec-cf4-1"
+      ],
+      "claimADisposition": "supported",
+      "claimBDisposition": "superseded"
+    },
+    {
+      "id": "cf-5",
+      "caseId": "case-3407",
+      "claimAId": "clm-a5",
+      "claimBId": "clm-b5",
+      "conflictType": "interpretation",
+      "severity": "medium",
+      "status": "unresolved",
+      "summary": "Training adequacy: internal review (privileged) vs. FAA program approval",
+      "createdAt": "2026-06-02T10:40:00Z",
+      "decisionIds": [],
+      "claimADisposition": "disputed",
+      "claimBDisposition": "disputed"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "dec-cf4-1",
+      "conflictId": "cf-4",
+      "decisionType": "accept_claim_a",
+      "selectedClaimId": "clm-a4",
+      "reasoning": "FDR discrete data is dispositive on autopilot state. The company preliminary brief predates the recorder readout and is directly contradicted by it. Claim B is retained in the record as superseded — it must remain visible for impeachment and history.",
+      "reviewerName": "Miriam Okafor",
+      "reviewerRole": "Senior Aviation Counsel",
+      "createdAt": "2026-06-28T14:32:00Z",
+      "previousStatus": "unresolved",
+      "newStatus": "accepted_claim_a",
+      "reportImpact": "Claim A → eligible; Claim B → excluded"
+    }
+  ],
+  "auditEvents": [
+    {
+      "id": "aud-001",
+      "caseId": "case-3407",
+      "at": "2026-05-02T09:14:00Z",
+      "actor": "Tomas Lindqvist",
+      "actorRole": "Safety Investigator",
+      "action": "source ingested",
+      "subjectType": "source",
+      "subjectId": "src-fdr",
+      "previousStatus": null,
+      "newStatus": "ingested",
+      "detail": "FDR Data Readout ingested; SHA-256 computed and verified against docket copy.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-002",
+      "caseId": "case-3407",
+      "at": "2026-05-02T09:21:00Z",
+      "actor": "Tomas Lindqvist",
+      "actorRole": "Safety Investigator",
+      "action": "source ingested",
+      "subjectType": "source",
+      "subjectId": "src-cvr",
+      "previousStatus": null,
+      "newStatus": "ingested",
+      "detail": "CVR transcript ingested; SHA-256 computed and verified against docket copy.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-003",
+      "caseId": "case-3407",
+      "at": "2026-05-02T09:30:00Z",
+      "actor": "Tomas Lindqvist",
+      "actorRole": "Safety Investigator",
+      "action": "source ingested",
+      "subjectType": "source",
+      "subjectId": "src-ntsb",
+      "previousStatus": null,
+      "newStatus": "ingested",
+      "detail": "NTSB AAR-10/01 ingested; SHA-256 computed and verified.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-004",
+      "caseId": "case-3407",
+      "at": "2026-05-06T15:42:00Z",
+      "actor": "Priya Natarajan",
+      "actorRole": "Claims Reviewer",
+      "action": "source ingested",
+      "subjectType": "source",
+      "subjectId": "src-depo-witness",
+      "previousStatus": null,
+      "newStatus": "ingested",
+      "detail": "Hollis deposition ingested under protective order; confidential designation applied.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-005",
+      "caseId": "case-3407",
+      "at": "2026-05-08T10:05:00Z",
+      "actor": "Priya Natarajan",
+      "actorRole": "Claims Reviewer",
+      "action": "source ingested",
+      "subjectType": "source",
+      "subjectId": "src-crew-records",
+      "previousStatus": null,
+      "newStatus": "ingested",
+      "detail": "Crew scheduling and commuting records ingested; custodian declaration on file.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-006",
+      "caseId": "case-3407",
+      "at": "2026-05-09T11:20:00Z",
+      "actor": "Miriam Okafor",
+      "actorRole": "Senior Aviation Counsel",
+      "action": "privilege designation applied",
+      "subjectType": "source",
+      "subjectId": "src-wx-expert",
+      "previousStatus": null,
+      "newStatus": "work_product",
+      "detail": "Camara meteorological reconstruction designated attorney work product on intake.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-007",
+      "caseId": "case-3407",
+      "at": "2026-05-09T11:34:00Z",
+      "actor": "Miriam Okafor",
+      "actorRole": "Senior Aviation Counsel",
+      "action": "privilege designation applied",
+      "subjectType": "source",
+      "subjectId": "src-memo",
+      "previousStatus": null,
+      "newStatus": "attorney_client",
+      "detail": "Internal litigation strategy memorandum designated attorney-client privileged.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-008",
+      "caseId": "case-3407",
+      "at": "2026-05-20T13:02:00Z",
+      "actor": "Daniel Reeves",
+      "actorRole": "Accident Reconstruction Expert",
+      "action": "claims extracted",
+      "subjectType": "claim",
+      "subjectId": "clm-a1",
+      "previousStatus": null,
+      "newStatus": "unreviewed",
+      "detail": "Stall-warning timing claims extracted from FDR readout and Hollis deposition.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-009",
+      "caseId": "case-3407",
+      "at": "2026-06-02T10:11:00Z",
+      "actor": "Daniel Reeves",
+      "actorRole": "Accident Reconstruction Expert",
+      "action": "conflict identified",
+      "subjectType": "conflict",
+      "subjectId": "cf-1",
+      "previousStatus": null,
+      "newStatus": "unresolved",
+      "detail": "FDR stall-warning time conflicts with ground-witness timeline. Severity: critical — probable-cause paragraph depends on it.",
+      "reportEligibilityChanged": true
+    },
+    {
+      "id": "aud-010",
+      "caseId": "case-3407",
+      "at": "2026-06-02T10:18:00Z",
+      "actor": "Daniel Reeves",
+      "actorRole": "Accident Reconstruction Expert",
+      "action": "conflict identified",
+      "subjectType": "conflict",
+      "subjectId": "cf-2",
+      "previousStatus": null,
+      "newStatus": "unresolved",
+      "detail": "Crew CVR icing remarks conflict with NTSB minimal-degradation finding.",
+      "reportEligibilityChanged": true
+    },
+    {
+      "id": "aud-011",
+      "caseId": "case-3407",
+      "at": "2026-06-02T10:24:00Z",
+      "actor": "Priya Natarajan",
+      "actorRole": "Claims Reviewer",
+      "action": "conflict identified",
+      "subjectType": "conflict",
+      "subjectId": "cf-3",
+      "previousStatus": null,
+      "newStatus": "unresolved",
+      "detail": "Commuting/rest records conflict with scheduling-manager deposition on fatigue.",
+      "reportEligibilityChanged": true
+    },
+    {
+      "id": "aud-012",
+      "caseId": "case-3407",
+      "at": "2026-06-02T10:31:00Z",
+      "actor": "Daniel Reeves",
+      "actorRole": "Accident Reconstruction Expert",
+      "action": "conflict identified",
+      "subjectType": "conflict",
+      "subjectId": "cf-4",
+      "previousStatus": null,
+      "newStatus": "unresolved",
+      "detail": "Company preliminary brief (hand-flying) conflicts with FDR autopilot discretes.",
+      "reportEligibilityChanged": true
+    },
+    {
+      "id": "aud-013",
+      "caseId": "case-3407",
+      "at": "2026-06-02T10:40:00Z",
+      "actor": "Miriam Okafor",
+      "actorRole": "Senior Aviation Counsel",
+      "action": "conflict identified",
+      "subjectType": "conflict",
+      "subjectId": "cf-5",
+      "previousStatus": null,
+      "newStatus": "unresolved",
+      "detail": "Privileged internal training review conflicts with FAA program-approval records.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-014",
+      "caseId": "case-3407",
+      "at": "2026-06-28T14:32:00Z",
+      "actor": "Miriam Okafor",
+      "actorRole": "Senior Aviation Counsel",
+      "action": "decision: Accept Claim A",
+      "subjectType": "conflict",
+      "subjectId": "cf-4",
+      "previousStatus": "unresolved",
+      "newStatus": "accepted_claim_a",
+      "detail": "FDR discrete data is dispositive on autopilot state. The company preliminary brief predates the recorder readout and is directly contradicted by it. Claim B is retained in the record as superseded — it must remain visible for impeachment and history.",
+      "reportEligibilityChanged": false
+    },
+    {
+      "id": "aud-015",
+      "caseId": "case-3407",
+      "at": "2026-06-28T14:32:00Z",
+      "actor": "Miriam Okafor",
+      "actorRole": "Senior Aviation Counsel",
+      "action": "claim status updated",
+      "subjectType": "claim",
+      "subjectId": "clm-a4",
+      "previousStatus": "unreviewed",
+      "newStatus": "supported",
+      "detail": "Report eligibility: blocked_by_conflict → eligible",
+      "reportEligibilityChanged": true
+    },
+    {
+      "id": "aud-016",
+      "caseId": "case-3407",
+      "at": "2026-06-28T14:32:00Z",
+      "actor": "Miriam Okafor",
+      "actorRole": "Senior Aviation Counsel",
+      "action": "claim status updated",
+      "subjectType": "claim",
+      "subjectId": "clm-b4",
+      "previousStatus": "unreviewed",
+      "newStatus": "superseded",
+      "detail": "Report eligibility: blocked_by_conflict → excluded",
+      "reportEligibilityChanged": true
+    }
+  ],
+  "reportSections": [
+    {
+      "id": "rpt-pc",
+      "caseId": "case-3407",
+      "title": "Probable Cause",
+      "paragraphRef": "PC-1",
+      "text": "The stall sequence began when the stick shaker activated at 22:16:27 EST as the aircraft slowed through 131 knots [FDR Data Readout, p. 44]. Ice accumulation had a minimal effect on aircraft performance [NTSB AAR-10/01, p. 155]. The autopilot disengaged automatically at stall-warning onset [FDR Data Readout, p. 46].",
+      "claimIds": [
+        "clm-a1",
+        "clm-b2",
+        "clm-a4"
+      ]
+    },
+    {
+      "id": "rpt-soe",
+      "caseId": "case-3407",
+      "title": "Sequence of Events",
+      "paragraphRef": "SOE-3",
+      "text": "The autopilot remained engaged through the approach until stall-warning onset [FDR Data Readout, p. 46]. The stick shaker activated at 22:16:27 EST [FDR Data Readout, p. 44].",
+      "claimIds": [
+        "clm-a4",
+        "clm-a1"
+      ]
+    },
+    {
+      "id": "rpt-wx",
+      "caseId": "case-3407",
+      "title": "Weather and Icing Analysis",
+      "paragraphRef": "WX-2",
+      "text": "The flight crew observed significant ice accretion on the leading edges during the approach [CVR Transcript, p. 27]. Performance analysis, however, attributes minimal aerodynamic degradation to ice accumulation [NTSB AAR-10/01, p. 155].",
+      "claimIds": [
+        "clm-a2",
+        "clm-b2"
+      ]
+    },
+    {
+      "id": "rpt-crew",
+      "caseId": "case-3407",
+      "title": "Crew Performance and Rest",
+      "paragraphRef": "CREW-4",
+      "text": "Scheduling and commuting records indicate both pilots traveled overnight before the accident flight and lacked hotel rest [Crew Scheduling Records, COL-004423]. The operator maintains that all pairings met Part 121 rest minimums [Braddock Dep., 88:14].",
+      "claimIds": [
+        "clm-a3",
+        "clm-b3"
+      ]
+    },
+    {
+      "id": "rpt-trn",
+      "caseId": "case-3407",
+      "title": "Training Adequacy Assessment",
+      "paragraphRef": "TRN-2",
+      "text": "Internal review material bearing on Q400 stall-recovery training adequacy [Internal Strategy Memo, p. 3] — privileged; must be replaced with a non-privileged source before any production use.",
+      "claimIds": [
+        "clm-a5"
+      ]
+    },
+    {
+      "id": "rpt-acft",
+      "caseId": "case-3407",
+      "title": "Aircraft Systems and Automation",
+      "paragraphRef": "ACFT-1",
+      "text": "The autoflight system operated as designed: the autopilot remained engaged until stall-warning onset and disengaged automatically with stick-shaker activation [FDR Data Readout, p. 46].",
+      "claimIds": [
+        "clm-a4"
+      ]
+    }
+  ]
+}

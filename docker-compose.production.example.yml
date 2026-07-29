@@ -1,0 +1,136 @@
+name: atlas-argus-production
+
+services:
+  api:
+    image: ${ATLAS_ARGUS_IMAGE_TAG:-atlas-argus:production}
+    build:
+      context: .
+      args:
+        DEMO_LOGINS: ""
+    restart: unless-stopped
+    read_only: true
+    # Run a real init as PID 1. When an extraction times out, the parent kills
+    # the whole process group; the Poppler/Tesseract processes die immediately
+    # but are reparented to PID 1, and uvicorn does not reap them. Without an
+    # init they accumulate as zombie table entries for the container's life.
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Ingestion writes its extraction result to a private temp directory
+    # before the parent reads it back, so /tmp needs headroom beyond the 64m
+    # the packet renderer needed.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    # Admission control bounds how many uploads run at once; it does not bound
+    # what one misconfigured request can allocate. Roughly
+    # SOURCE_CHILD_MEMORY_LIMIT_BYTES x MAX_CONCURRENT_SOURCE_INGESTIONS plus
+    # baseline API overhead.
+    mem_limit: 1536m
+    # EXACTLY ONE API PROCESS. The ingestion admission limit is per-process, so
+    # running N workers multiplies both the concurrency and the memory ceiling
+    # while appearing to honour the configured value. Scaling out requires a
+    # dedicated ingestion service or a cross-process coordinator first; see
+    # docs/production-readiness.md.
+    command:
+      - sh
+      - -c
+      - >-
+        python -m atlas_argus.db.bootstrap
+        && unset ATLAS_ARGUS_MIGRATION_DATABASE_URL
+        && exec uvicorn atlas_argus.api.app:app
+        --host 0.0.0.0 --port 8100 --workers 1
+        --proxy-headers
+        --forwarded-allow-ips "${ATLAS_ARGUS_FORWARDED_ALLOW_IPS:-127.0.0.1}"
+    expose:
+      - "8100"
+    environment:
+      ATLAS_ARGUS_DATABASE_URL: postgresql+psycopg://atlas_app:${ATLAS_ARGUS_RUNTIME_DB_PASSWORD:?set ATLAS_ARGUS_RUNTIME_DB_PASSWORD}@db:5432/atlas_argus
+      ATLAS_ARGUS_MIGRATION_DATABASE_URL: postgresql+psycopg://atlas_owner:${ATLAS_ARGUS_MIGRATION_DB_PASSWORD:?set ATLAS_ARGUS_MIGRATION_DB_PASSWORD}@db:5432/atlas_argus
+      ATLAS_ARGUS_ENV: production
+      ATLAS_ARGUS_METRICS_TOKEN: ${ATLAS_ARGUS_METRICS_TOKEN:?set ATLAS_ARGUS_METRICS_TOKEN}
+      ATLAS_ARGUS_CORS_ORIGINS: ${ATLAS_ARGUS_CORS_ORIGINS:-}
+      ATLAS_ARGUS_FORWARDED_ALLOW_IPS: ${ATLAS_ARGUS_FORWARDED_ALLOW_IPS:?set ATLAS_ARGUS_FORWARDED_ALLOW_IPS}
+      ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES: ${ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES:-262144}
+      ATLAS_ARGUS_MAX_PACKET_ENTRIES: ${ATLAS_ARGUS_MAX_PACKET_ENTRIES:-250}
+      ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES: ${ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES:-2097152}
+      ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES: ${ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES:-524288}
+      # Document ingestion. The API refuses to boot if the child memory limit
+      # is under 3x the upload cap — a misconfiguration that would otherwise
+      # surface as every upload dying on an allocation.
+      ATLAS_ARGUS_MAX_SOURCE_UPLOAD_BYTES: ${ATLAS_ARGUS_MAX_SOURCE_UPLOAD_BYTES:-26214400}
+      ATLAS_ARGUS_MAX_SOURCE_PAGE_COUNT: ${ATLAS_ARGUS_MAX_SOURCE_PAGE_COUNT:-200}
+      ATLAS_ARGUS_SOURCE_OCR_PAGE_TIMEOUT_SECONDS: ${ATLAS_ARGUS_SOURCE_OCR_PAGE_TIMEOUT_SECONDS:-20}
+      ATLAS_ARGUS_SOURCE_INGESTION_TIMEOUT_SECONDS: ${ATLAS_ARGUS_SOURCE_INGESTION_TIMEOUT_SECONDS:-300}
+      ATLAS_ARGUS_MAX_EXTRACTED_TEXT_BYTES_PER_PAGE: ${ATLAS_ARGUS_MAX_EXTRACTED_TEXT_BYTES_PER_PAGE:-51200}
+      ATLAS_ARGUS_MAX_TOTAL_EXTRACTED_TEXT_BYTES: ${ATLAS_ARGUS_MAX_TOTAL_EXTRACTED_TEXT_BYTES:-25165824}
+      ATLAS_ARGUS_MAX_CONCURRENT_SOURCE_INGESTIONS: ${ATLAS_ARGUS_MAX_CONCURRENT_SOURCE_INGESTIONS:-2}
+      ATLAS_ARGUS_SOURCE_CHILD_MEMORY_LIMIT_BYTES: ${ATLAS_ARGUS_SOURCE_CHILD_MEMORY_LIMIT_BYTES:-536870912}
+      ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY: ${ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY:-70}
+      ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES: ${ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES:-3145728}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/api/health', timeout=2).read()\""]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: atlas_owner
+      POSTGRES_PASSWORD: ${ATLAS_ARGUS_MIGRATION_DB_PASSWORD:?set ATLAS_ARGUS_MIGRATION_DB_PASSWORD}
+      POSTGRES_DB: atlas_argus
+      ATLAS_ARGUS_RUNTIME_DB_PASSWORD: ${ATLAS_ARGUS_RUNTIME_DB_PASSWORD:?set ATLAS_ARGUS_RUNTIME_DB_PASSWORD}
+    volumes:
+      - atlas-argus-pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-runtime-role.sh:/docker-entrypoint-initdb.d/01-runtime-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas_owner -d atlas_argus"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docs/deploy/Caddyfile.example:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./docs/deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    secrets:
+      - source: atlas-argus-metrics-token
+        target: atlas-argus-metrics-token
+    expose:
+      - "9090"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  atlas-argus-pgdata:
+  caddy-data:
+  caddy-config:
+  prometheus-data:
+
+secrets:
+  atlas-argus-metrics-token:
+    environment: ATLAS_ARGUS_METRICS_TOKEN

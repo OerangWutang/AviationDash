@@ -1,0 +1,138 @@
+"""Request bodies. camelCase on the wire (matching the frontend types),
+snake_case in Python. Enum values are validated in the service layer so error
+messages match the frontend's domain wording.
+
+Reviewer identity comes from the authenticated session — never from the
+request body.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
+
+MAX_ID_LENGTH = 96
+MAX_USERNAME_LENGTH = 128
+MAX_PASSWORD_LENGTH = 256
+MAX_NAME_LENGTH = 160
+MAX_CLAIM_TEXT_LENGTH = 4_000
+MAX_PAGE_REF_LENGTH = 80
+MAX_QUOTE_LENGTH = 4_000
+MAX_SUMMARY_LENGTH = 1_000
+MAX_REASONING_LENGTH = 4_000
+MAX_SECTION_TITLE_LENGTH = 200
+MAX_SECTION_REF_LENGTH = 80
+MAX_SECTION_TEXT_LENGTH = 20_000
+MAX_SECTION_CLAIMS = 50
+
+
+class CamelModel(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class LoginRequest(CamelModel):
+    username: str = Field(min_length=1, max_length=MAX_USERNAME_LENGTH)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class ChangePasswordRequest(CamelModel):
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class CreateReviewerRequest(CamelModel):
+    name: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
+    username: str = Field(min_length=1, max_length=MAX_USERNAME_LENGTH)
+    role: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
+    initial_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class ResetReviewerPasswordRequest(CamelModel):
+    new_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+
+
+class MfaCodeRequest(CamelModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class CaseMemberRequest(CamelModel):
+    reviewer_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    role: str | None = Field(default=None, max_length=MAX_NAME_LENGTH)
+
+
+class NewClaimRequest(CamelModel):
+    source_document_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    text: str = Field(min_length=1, max_length=MAX_CLAIM_TEXT_LENGTH)
+    page_ref: str = Field(min_length=1, max_length=MAX_PAGE_REF_LENGTH)
+    quote: str = Field(min_length=1, max_length=MAX_QUOTE_LENGTH)
+    confidence: float = Field(ge=0, le=1)
+    evidence_quality: str = Field(min_length=1, max_length=80)
+    #: The extracted page to check the quote against, when the source has been
+    #: ingested. There is deliberately no field for the verification result
+    #: itself — that is the server's conclusion, not the client's assertion.
+    source_page_extraction_id: str | None = Field(
+        default=None, min_length=1, max_length=MAX_ID_LENGTH
+    )
+
+
+class NewSourceRequest(CamelModel):
+    """An uploaded document.
+
+    Note what is absent: no ``custody`` field. Custody is the chain that makes
+    a document admissible, so the server builds the first entry from what it
+    knows (who uploaded it, in what role, when, which bytes) rather than
+    accepting the client's account of it.
+    """
+
+    title: str = Field(min_length=1, max_length=300)
+    type: str = Field(min_length=1, max_length=80)
+    origin: str = Field(min_length=1, max_length=200)
+    custodian: str = Field(min_length=1, max_length=200)
+    docket_ref: str | None = Field(default=None, max_length=120)
+    privilege_status: str = Field(min_length=1, max_length=40)
+    original_filename: str = Field(min_length=1, max_length=255)
+    #: Base64. Bounded generously here; the real ceiling is enforced against
+    #: the decoded bytes, and the request body is capped by middleware before
+    #: this model is ever constructed.
+    content_base64: str = Field(min_length=1)
+    #: Optional client-generated UUID, reused across that client's own retries
+    #: of the same upload. A multi-minute request is exactly the kind a browser
+    #: or proxy retries.
+    idempotency_key: str | None = Field(default=None, max_length=100)
+
+
+class VerifyClaimQuoteRequest(CamelModel):
+    reasoning: str = Field(min_length=20, max_length=MAX_REASONING_LENGTH)
+
+
+class FlagConflictRequest(CamelModel):
+    claim_a_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    claim_b_id: str = Field(min_length=1, max_length=MAX_ID_LENGTH)
+    conflict_type: str = Field(min_length=1, max_length=80)
+    severity: str = Field(min_length=1, max_length=80)
+    summary: str = Field(min_length=1, max_length=MAX_SUMMARY_LENGTH)
+
+
+class DecisionRequest(CamelModel):
+    decision_type: str = Field(min_length=1, max_length=80)
+    selected_claim_id: str | None = Field(default=None, max_length=MAX_ID_LENGTH)
+    reasoning: str = Field(min_length=1, max_length=MAX_REASONING_LENGTH)
+    expected_version: int = Field(ge=1)
+
+
+class SectionRequest(CamelModel):
+    title: str = Field(min_length=1, max_length=MAX_SECTION_TITLE_LENGTH)
+    paragraph_ref: str = Field(min_length=1, max_length=MAX_SECTION_REF_LENGTH)
+    text: str = Field(min_length=1, max_length=MAX_SECTION_TEXT_LENGTH)
+    claim_ids: list[str] = Field(min_length=1, max_length=MAX_SECTION_CLAIMS)
+    expected_version: int | None = Field(default=None, ge=1)
+
+
+class SectionUpdateRequest(SectionRequest):
+    expected_version: int = Field(ge=1)
+
+
+class GeneratePacketRequest(CamelModel):
+    packet_type: Literal["internal", "production"]

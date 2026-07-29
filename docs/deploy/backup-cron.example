@@ -1,0 +1,15 @@
+# Example cron entry: daily local backup at 02:15 UTC.
+# Install from the deployment host after setting the absolute project path.
+# The production helpers select ATLAS_ARGUS_PRODUCTION_COMPOSE_FILE (default:
+# docker-compose.production.example.yml) and refuse docker-compose.yml.
+#
+# 15 2 * * * cd /opt/atlas-argus && set -a && . ./.env.production && set +a && export ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED=1 && (backup="$(bash scripts/backup_db.sh)" && bash scripts/backup_offsite.sh "$backup") >> /var/log/atlas-argus-backup.log 2>&1
+#
+# Example weekly non-destructive restore drill from the latest local dump:
+#
+# 30 3 * * 0 cd /opt/atlas-argus && set -a && . ./.env.production && set +a && latest="$(ls -1t backups/atlas_argus_*.dump | head -1)" && bash scripts/restore_drill.sh "$latest" >> /var/log/atlas-argus-restore-drill.log 2>&1
+#
+# Production operators should sync the resulting dump files and `.sha256`
+# sidecars to encrypted off-host storage and run restore drills. This repo
+# intentionally does not assume a cloud provider, bucket name, or retention
+# policy.
