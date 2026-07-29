@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from ..approval import evidence_state_sha256
 from ..auth import hash_password
 from ..config import is_production, seed_password
 from ..integrity import (
@@ -259,6 +260,18 @@ def seed_database(session: Session) -> None:
         )
         session.add(report_section)
         session.flush()
+        cited_claims = [
+            session.get(m.Claim, claim_id) for claim_id in section["claimIds"]
+        ]
+        approval_evidence_hash = (
+            evidence_state_sha256(session, list(section["claimIds"]))
+            if cited_claims
+            and all(
+                claim is not None and claim.report_eligibility == "eligible"
+                for claim in cited_claims
+            )
+            else None
+        )
         seed_revision = m.ReportSectionRevision(
             id=revision_id,
             section_id=section["id"],
@@ -274,6 +287,7 @@ def seed_database(session: Session) -> None:
             revision_reason="Seeded approved sample section.",
             parent_revision_id=None,
             approval_state="approved",
+            approval_evidence_sha256=approval_evidence_hash,
             content_sha256=revision_content_sha256(
                 case_id=section["caseId"],
                 section_id=section["id"],

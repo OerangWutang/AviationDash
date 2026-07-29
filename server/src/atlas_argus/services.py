@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import auth
+from .approval import evidence_state_sha256, revision_approval_is_current
 from .config import (
     max_packet_artifact_bytes,
     max_packet_document_bytes,
@@ -488,7 +489,9 @@ def serialize_section(session: Session, section: m.ReportSection) -> dict:
         "paragraphRef": section.paragraph_ref,
         "text": section.text,
         "claimIds": list(section.claim_ids),
-        "approvalState": revision.approval_state if revision is not None else "draft",
+        "approvalState": (
+            "approved" if revision_approval_is_current(session, revision) else "draft"
+        ),
         "activeRevisionId": section.active_revision_id,
         "version": section.version,
     }
@@ -829,6 +832,7 @@ def _append_section_revision(
     at: datetime,
     reason: str,
     approval_state: str = "draft",
+    approval_evidence_sha256: str | None = None,
 ) -> m.ReportSectionRevision:
     # Existing-section callers also hold the section row FOR UPDATE. The
     # advisory lock covers initial inserts and makes the chain's serialization
@@ -856,6 +860,7 @@ def _append_section_revision(
         revision_reason=reason,
         parent_revision_id=section.active_revision_id,
         approval_state=approval_state,
+        approval_evidence_sha256=approval_evidence_sha256,
         content_sha256=revision_content_sha256(
             case_id=section.case_id,
             section_id=section.id,
@@ -3072,6 +3077,12 @@ def approve_section_op(
     if not allowed:
         raise t.PermissionDenied(reason or "Not permitted.")
     _check_expected_version(section.version, expected_version, "Report section")
+    impact = _section_impact(session, section.paragraph_ref, list(section.claim_ids))
+    if impact.status not in {"eligible", "eligible_with_disclosure"}:
+        raise t.ValidationFailure(
+            "This section is not report-eligible and cannot be approved for production."
+        )
+    approval_evidence_hash = evidence_state_sha256(session, list(section.claim_ids))
     now = _now()
     section.version += 1
     revision = _append_section_revision(
@@ -3081,8 +3092,8 @@ def approve_section_op(
         at=now,
         reason="Approved complete rendered section for production.",
         approval_state="approved",
+        approval_evidence_sha256=approval_evidence_hash,
     )
-    impact = _section_impact(session, section.paragraph_ref, list(section.claim_ids))
     event = _append_audit(
         session,
         case_id=section.case_id,
@@ -3293,6 +3304,11 @@ def generate_packet_op(
         "manifestSha256": manifest_sha256,
         "artifactSha256": artifact_sha256,
         "packetIntegrityHash": artifact.integrity_hash,
+        "pdfSha256": pdf_hash,
+        "hasPdf": pdf_hash is not None,
+        "pdfFilename": (
+            filename.rsplit(".", 1)[0] + ".pdf" if pdf_hash is not None else None
+        ),
         "filename": filename,
         "document": document,
         "auditEvent": serialize_audit_event(event),

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .approval import revision_approval_is_current
 from .db import models as m
 from .db.seed import iso_z
 from .domain.types import WITHHOLDING_PRIVILEGE
@@ -174,7 +175,7 @@ def build_packet(
         # body must be that revision's content even if the section is later
         # changed out-of-band (bug, direct SQL, partial transaction). Internal
         # work product deliberately reflects the section's current state.
-        approved = production and revision is not None and revision.approval_state == "approved"
+        approved = production and revision_approval_is_current(session, revision)
         source_ = revision if approved else section
         title = source_.title
         paragraph_ref = source_.paragraph_ref
@@ -193,7 +194,7 @@ def build_packet(
                 "withheld",
                 "Withheld under privilege; see privilege log.",
             )
-        elif revision is None or revision.approval_state != "approved":
+        elif not approved:
             disposition, reason = (
                 "excluded",
                 "Excluded from production.",

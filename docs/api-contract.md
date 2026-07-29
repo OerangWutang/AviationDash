@@ -379,6 +379,11 @@ Existing mutable aggregates carry a `version`:
   and
 - approval must send `expectedVersion` as a query parameter.
 
+Approval is rejected while the section is not report-eligible. A successful
+approval is bound to the cited evidence state; later claim, source, quote-
+verification, or conflict changes make `approvalState` read as `draft` and
+exclude the section from production until Senior counsel reapproves it.
+
 The server locks the current row and returns `409` when actual and expected
 versions differ. The frontend then reloads the selected matter, discards the
 stale server response, and keeps unsaved form input where applicable so the
@@ -468,6 +473,8 @@ vouch for is worse than serving none, because the recipient cannot tell.
 feature. Those are deliberately not back-filled: re-rendering one now would
 manufacture a document that was never generated, served, or audited.
 `hasPdf`, `pdfSha256` and `pdfFilename` on artifact listings say which is which.
+The packet-generation response exposes the same fields so development runtimes
+that intentionally lack the renderer do not offer a dead PDF action.
 
 **Verification recomputes the hash of the stored bytes and never re-renders.**
 Output legitimately depends on the installed renderer and font versions, so

@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -146,6 +147,11 @@ _STAMP_TEXT = {
 }
 _STAMP_COLOR = {"internal": "#8a1f1a", "production": "#1d4f8a"}
 
+# SOURCE_DATE_EPOCH is process-global. FastAPI runs synchronous routes in a
+# thread pool, so packets for different matters can render concurrently even
+# with one Uvicorn worker. Hold this lock across both the mutation and render.
+_RENDER_LOCK = threading.Lock()
+
 
 class PdfRenderingUnavailable(RuntimeError):
     """WeasyPrint or its system libraries are not installed."""
@@ -234,11 +240,12 @@ def render_packet_pdf(
         document_html, print_stylesheet(packet.type, packet.packet_id, body_sha256)
     )
 
-    with _pinned_build_clock(generated_at):
-        # base_url=None: the document is self-contained by construction, and
-        # refusing a base URL means a stray external reference cannot make the
-        # renderer fetch anything while producing evidence.
-        pdf = HTML(string=html, base_url=None).write_pdf()
+    with _RENDER_LOCK:
+        with _pinned_build_clock(generated_at):
+            # base_url=None: the document is self-contained by construction, and
+            # refusing a base URL means a stray external reference cannot make the
+            # renderer fetch anything while producing evidence.
+            pdf = HTML(string=html, base_url=None).write_pdf()
 
     if len(pdf) > max_bytes:
         raise PdfTooLarge(

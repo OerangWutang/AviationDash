@@ -88,7 +88,7 @@ def account_audit_event_content(event: Any) -> dict:
 
 
 def report_section_revision_content(revision: Any) -> dict:
-    return {
+    content = {
         "schema": "atlas_argus.report_section_revision_row.v1",
         "id": revision.id,
         "sectionId": revision.section_id,
@@ -106,6 +106,10 @@ def report_section_revision_content(revision: Any) -> dict:
         "approvalState": revision.approval_state,
         "contentSha256": revision.content_sha256,
     }
+    approval_evidence_sha256 = getattr(revision, "approval_evidence_sha256", None)
+    if approval_evidence_sha256:
+        content["approvalEvidenceSha256"] = approval_evidence_sha256
+    return content
 
 
 def review_decision_content(decision: Any) -> dict:

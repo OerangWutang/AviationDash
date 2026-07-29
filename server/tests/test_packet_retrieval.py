@@ -231,8 +231,8 @@ def test_noncleared_production_packet_has_no_privileged_metadata(client):
         f"/api/report-sections/{privileged_section['id']}/approve",
         params={"expectedVersion": privileged_section["version"]},
     )
-    assert privileged_approval.status_code == 200, privileged_approval.text
-    privileged_revision_id = privileged_approval.json()["section"]["activeRevisionId"]
+    assert privileged_approval.status_code == 422, privileged_approval.text
+    privileged_revision_id = privileged_section["activeRevisionId"]
     with SessionLocal() as session:
         privileged_revision = session.get(ReportSectionRevision, privileged_revision_id)
         assert privileged_revision is not None

@@ -541,6 +541,9 @@ export interface ServerPacket {
   entries: ServerPacketEntry[];
   sha256: string;
   packetIntegrityHash: string;
+  pdfSha256: string | null;
+  hasPdf: boolean;
+  pdfFilename: string | null;
   filename: string;
   document: string;
   auditEvent: AuditEvent;
@@ -559,6 +562,9 @@ export interface PacketArtifactSummary {
   documentSha256: string;
   manifestSha256: string;
   artifactSha256: string;
+  pdfSha256: string | null;
+  hasPdf: boolean;
+  pdfFilename: string | null;
   packetIntegrityHash: string;
   stats: { included: number; excluded: number; withheld: number };
   integrityOk: boolean;

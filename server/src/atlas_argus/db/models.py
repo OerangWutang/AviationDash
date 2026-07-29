@@ -593,6 +593,9 @@ class ReportSectionRevision(Base):
         ForeignKey("report_section_revision.id"), nullable=True
     )
     approval_state: Mapped[str] = mapped_column(String, default="draft", server_default="draft")
+    #: Present only on production approvals. Binds the approval to the current
+    #: cited claims, sources, quote verification, and conflict state.
+    approval_evidence_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     content_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     #: Chained off parent_revision_id's own integrity_hash — content_sha256
     #: alone proves nothing (an attacker who edits a row can always recompute

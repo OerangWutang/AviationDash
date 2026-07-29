@@ -41,6 +41,11 @@ MAX_FAILED_LOGINS = 5
 LOCKOUT_SECONDS = 60.0
 LOGIN_LOCKED = "Too many failed sign-in attempts — try again shortly."
 LOGIN_THROTTLE_PREFIX = "login:"
+GLOBAL_LOGIN_THROTTLE_KEY = "login-global"
+GLOBAL_LOGIN_MAX_ATTEMPTS = 30
+GLOBAL_LOGIN_WINDOW = timedelta(seconds=60)
+GLOBAL_LOGIN_LOCKOUT_SECONDS = 60.0
+GLOBAL_LOGIN_LOCKED = "Too many sign-in attempts — try again shortly."
 MFA_REQUIRED = "MFA verification required for this action."
 MFA_ENROLLMENT_REQUIRED = "MFA enrollment required for this action."
 MFA_ALREADY_ENABLED = (
@@ -199,6 +204,35 @@ def _record_login_failure(session: Session, username: str) -> None:
     session.flush()
 
 
+def _consume_global_login_admission(session: Session) -> None:
+    """Bound aggregate login work across usernames and API processes.
+
+    The fixed row lock also serializes Argon2 verification, preventing a burst
+    of random usernames from running many expensive hashes concurrently.
+    ``updated_at`` is the start of the current fixed window, not the latest
+    attempt, so a low steady rate does not eventually lock everyone out.
+    """
+    now = _now()
+    throttle = _throttle_row(session, GLOBAL_LOGIN_THROTTLE_KEY)
+    if throttle.locked_until is not None:
+        if now < throttle.locked_until:
+            raise RateLimited(GLOBAL_LOGIN_LOCKED)
+        throttle.failures = 0
+        throttle.locked_until = None
+        throttle.updated_at = now
+
+    if now - throttle.updated_at >= GLOBAL_LOGIN_WINDOW:
+        throttle.failures = 0
+        throttle.updated_at = now
+
+    throttle.failures += 1
+    if throttle.failures > GLOBAL_LOGIN_MAX_ATTEMPTS:
+        throttle.locked_until = now + timedelta(seconds=GLOBAL_LOGIN_LOCKOUT_SECONDS)
+        session.flush()
+        raise RateLimited(GLOBAL_LOGIN_LOCKED)
+    session.flush()
+
+
 def _clear_throttle(session: Session, key: str) -> None:
     session.execute(delete(m.LoginThrottle).where(m.LoginThrottle.username == key))
 
@@ -232,6 +266,7 @@ def login(session: Session, username: str, password: str) -> tuple[m.Reviewer, s
     username = _normalize_username(username)
     now = _now()
 
+    _consume_global_login_admission(session)
     throttle = _throttle_row(session, _login_throttle_key(username))
     if throttle.locked_until is not None and now < throttle.locked_until:
         raise RateLimited(LOGIN_LOCKED)

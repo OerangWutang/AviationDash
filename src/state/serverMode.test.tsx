@@ -480,6 +480,57 @@ describe("server mode", () => {
     ).toContain(sample.caseFile.id);
   });
 
+  it("does not let stale matter creation restore loading after logout", async () => {
+    const creationResponse = deferred<Response>();
+    routeFetch((url, init) => {
+      if (url.endsWith("/api/cases") && init?.method === "POST") {
+        return creationResponse.promise;
+      }
+      if (url.endsWith("/api/auth/logout") && init?.method === "POST") {
+        return jsonResponse({ status: "signed_out" });
+      }
+      return null;
+    });
+    renderControlledApp();
+    await screen.findAllByText("Colgan Air Flight 3407");
+
+    const creation = currentStore().createMatter({
+      name: "Late Matter",
+      aircraft: "Boeing 737",
+      accidentDate: "2025-11-02",
+      location: "Anchorage, Alaska",
+      matterType: "wrongful_death",
+      docketRef: "DCA26MA099",
+    });
+    await act(async () => {
+      await currentStore().logout();
+    });
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+
+    let result!: Awaited<typeof creation>;
+    await act(async () => {
+      creationResponse.resolve(
+        jsonResponse({
+          caseFile: { ...sample.caseFile, id: "case-late", name: "Late Matter" },
+          caseMembership: {
+            caseId: "case-late",
+            reviewerId: "rev-okafor",
+            role: "Senior Aviation Counsel",
+            isActive: true,
+          },
+        }, 201),
+      );
+      result = await creation;
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "This operation was superseded by a session or matter change.",
+    });
+    expect(currentStore().state.bootStatus).toBe("unauthenticated");
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+  });
+
   it("switches between assigned matters", async () => {
     const secondCase = {
       ...sample.caseFile,

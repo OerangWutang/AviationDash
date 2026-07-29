@@ -92,8 +92,12 @@ Report sections:
 
 In server mode, a production packet includes a section only when its active
 revision has been approved by a reviewer whose role in that matter is Senior
-Aviation Counsel. Approval and revision requests use optimistic versions so a
-stale browser cannot overwrite a newer decision or draft.
+Aviation Counsel. Approval is available only while the section is report-
+eligible and is bound to a digest of its cited claims, sources, quote
+verification, and conflicts. Any later evidence-state change requires explicit
+reapproval before the section can return to production. Approval and revision
+requests use optimistic versions so a stale browser cannot overwrite a newer
+decision or draft.
 
 ## Identity, roles, and privilege visibility
 
@@ -131,6 +135,9 @@ session or matter from being applied after sign-out, sign-in, or matter switch.
 Provisioned production accounts must change their initial password before case
 routes are available. Password changes revoke every other session. Login and
 TOTP failures use persistent PostgreSQL throttles shared across API processes.
+Login also has a fixed aggregate admission window whose row lock serializes
+Argon2 work, so rotating through random usernames cannot run unbounded password
+hashes concurrently.
 
 TOTP MFA can be enrolled and verified in the UI. Review decisions, report
 approval, packet operations, integrity verification, and all administration

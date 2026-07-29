@@ -9,7 +9,10 @@ properties of the *document* — page size, page numbering, per-page provenance
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import threading
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -64,8 +67,12 @@ def _read(pdf: bytes):
 
 
 def test_generating_a_packet_stores_a_pdf(senior):
-    packet_id = _generate(senior)["packetId"]
+    generated = _generate(senior)
+    packet_id = generated["packetId"]
     artifact = _stored(packet_id)
+    assert generated["hasPdf"] is True
+    assert generated["pdfSha256"] == artifact.pdf_sha256
+    assert generated["pdfFilename"].endswith(".pdf")
     assert artifact.pdf_sha256 is not None
     pdf = _pdf_bytes(packet_id)
     assert pdf.startswith(b"%PDF")
@@ -151,6 +158,51 @@ def test_rendering_is_byte_reproducible():
     first = packet_pdf.render_packet_pdf(stub, doc, "a" * 64, generated_at=at, max_bytes=10**7)
     second = packet_pdf.render_packet_pdf(stub, doc, "a" * 64, generated_at=at, max_bytes=10**7)
     assert first == second
+
+
+def test_concurrent_rendering_serializes_the_process_build_clock(monkeypatch):
+    active = 0
+    max_active = 0
+    counter_lock = threading.Lock()
+
+    class FakeHtml:
+        def __init__(self, *, string, base_url):
+            assert string
+            assert base_url is None
+
+        def write_pdf(self):
+            nonlocal active, max_active
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with counter_lock:
+                active -= 1
+            return b"%PDF-fake"
+
+    monkeypatch.setattr("weasyprint.HTML", FakeHtml)
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    doc = "<!doctype html><html><head></head><body>Packet</body></html>"
+
+    def render(hour: int) -> bytes:
+        stub = type("P", (), {"type": "production", "packet_id": f"pkt-{hour}"})()
+        return packet_pdf.render_packet_pdf(
+            stub,
+            doc,
+            "a" * 64,
+            generated_at=datetime(2026, 7, 29, hour, tzinfo=UTC),
+            max_bytes=1024,
+        )
+
+    threads = [threading.Thread(target=render, args=(hour,)) for hour in (10, 11)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert max_active == 1
+    assert "SOURCE_DATE_EPOCH" not in os.environ
 
 
 def test_render_respects_the_size_ceiling():

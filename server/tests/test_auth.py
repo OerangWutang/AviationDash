@@ -541,7 +541,7 @@ def test_stale_login_throttle_rows_for_unknown_usernames_are_swept(client, monke
         client.post("/api/auth/login", json={"username": f"ghost-{i}", "password": "whatever"})
     with SessionLocal() as s:
         count = s.execute(select(func.count()).select_from(LoginThrottle)).scalar_one()
-    assert count == 5
+    assert count == 6  # five username rows plus the fixed aggregate-admission row
 
     # Once those rows are unlocked and quiet past the sweep window, the next
     # login attempt reclaims them instead of growing the table forever.
@@ -549,7 +549,41 @@ def test_stale_login_throttle_rows_for_unknown_usernames_are_swept(client, monke
     client.post("/api/auth/login", json={"username": "ghost-new", "password": "whatever"})
     with SessionLocal() as s:
         usernames = s.execute(select(LoginThrottle.username)).scalars().all()
-    assert usernames == [auth._login_throttle_key("ghost-new")]
+    assert set(usernames) == {
+        auth.GLOBAL_LOGIN_THROTTLE_KEY,
+        auth._login_throttle_key("ghost-new"),
+    }
+
+
+def test_global_login_admission_bounds_random_username_work(client, monkeypatch):
+    from datetime import UTC, datetime
+
+    from atlas_argus import auth
+
+    monkeypatch.setattr(auth, "_now", lambda: datetime(2026, 7, 11, 10, 0, tzinfo=UTC))
+    monkeypatch.setattr(auth, "GLOBAL_LOGIN_MAX_ATTEMPTS", 2)
+
+    calls = 0
+    original_verify = auth._verify_password
+
+    def observed_verify(password_hash, password):
+        nonlocal calls
+        calls += 1
+        return original_verify(password_hash, password)
+
+    monkeypatch.setattr(auth, "_verify_password", observed_verify)
+
+    for username in ("random-one", "random-two"):
+        response = client.post(
+            "/api/auth/login", json={"username": username, "password": "wrong"}
+        )
+        assert response.status_code == 401
+
+    blocked = client.post(
+        "/api/auth/login", json={"username": "random-three", "password": "wrong"}
+    )
+    assert blocked.status_code == 429
+    assert calls == 2, "the rejected aggregate attempt must not run Argon2"
 
 
 def test_unknown_username_login_still_runs_a_password_verify(client):

@@ -26,6 +26,8 @@ interface GeneratedView {
   generatedAt: string;
   generatedByName: string | null;
   generatedByRole: string | null;
+  hasPdf: boolean;
+  pdfFilename: string | null;
   stats: { included: number; excluded: number; withheld: number };
   entries: {
     key: string;
@@ -156,6 +158,8 @@ export function PacketExportView() {
       generatedAt: packet.meta.generatedAt,
       generatedByName: packet.meta.generatedByName,
       generatedByRole: packet.meta.generatedByRole,
+      hasPdf: false,
+      pdfFilename: null,
       stats: packet.stats,
       entries: packet.entries.map((entry) => ({
         key: entry.section.id,
@@ -181,6 +185,8 @@ export function PacketExportView() {
       generatedAt: packet.generatedAt,
       generatedByName: packet.generatedByName,
       generatedByRole: packet.generatedByRole,
+      hasPdf: packet.hasPdf,
+      pdfFilename: packet.pdfFilename,
       stats: packet.stats,
       entries: packet.entries.map((entry) => ({
         key: entry.sectionId,
@@ -295,6 +301,8 @@ export function PacketExportView() {
         generatedAt: packet.generatedAt,
         generatedByName: packet.generatedByName,
         generatedByRole: packet.generatedByRole,
+        hasPdf: packet.hasPdf,
+        pdfFilename: packet.pdfFilename,
         stats: packet.stats,
         entries: entries.map((entry) => ({
           key: entry.sectionId,
@@ -508,7 +516,7 @@ export function PacketExportView() {
               ))}
             </ul>
             <div className="save-row">
-              {serverMode && (
+              {serverMode && generated.hasPdf && (
                 <button
                   type="button"
                   className="btn-primary"
@@ -517,6 +525,11 @@ export function PacketExportView() {
                 >
                   {downloadingPdf ? "Preparing PDF…" : "Download packet (.pdf)"}
                 </button>
+              )}
+              {serverMode && !generated.hasPdf && (
+                <span className="save-blocker">
+                  This stored packet has no controlled PDF. Regenerate it to produce one.
+                </span>
               )}
               <button
                 type="button"
@@ -531,11 +544,9 @@ export function PacketExportView() {
               <span className="save-blocker">
                 {serverMode ? (
                   <>
-                    The PDF is the produced artifact: it was paginated and hashed
-                    on the server, and every page carries the packet ID and body
-                    hash. Printing from this preview produces a different document
-                    that depends on your browser and page setup — use it to read,
-                    not to produce.
+                    {generated.hasPdf
+                      ? "The PDF is the produced artifact: it was paginated and hashed on the server, and every page carries the packet ID and body hash. Printing from this preview produces a different document that depends on your browser and page setup — use it to read, not to produce."
+                      : "This packet predates controlled PDF export or was generated in a development runtime without the renderer. The HTML remains available for review."}
                   </>
                 ) : (
                   <>

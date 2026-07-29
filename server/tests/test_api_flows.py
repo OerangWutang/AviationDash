@@ -456,6 +456,85 @@ class TestReportSections:
         )
         assert revised.json()["section"]["approvalState"] == "draft"
 
+    def test_blocked_section_cannot_be_approved_for_production(self, client):
+        login_as(client)
+        created = client.post(
+            "/api/report-sections",
+            json={**self.SECTION, "claimIds": ["clm-a1"]},
+        ).json()["section"]
+
+        approved = client.post(
+            f"/api/report-sections/{created['id']}/approve",
+            params={"expectedVersion": created["version"]},
+        )
+        assert approved.status_code == 422
+        assert "not report-eligible" in approved.json()["detail"]
+
+    def test_evidence_change_requires_fresh_production_approval(self, client):
+        login_as(client)
+        created = client.post("/api/report-sections", json=self.SECTION).json()["section"]
+        section_id = created["id"]
+        approved = client.post(
+            f"/api/report-sections/{section_id}/approve",
+            params={"expectedVersion": created["version"]},
+        )
+        assert approved.status_code == 200
+        approved_version = approved.json()["section"]["version"]
+
+        unresolved = client.post(
+            "/api/conflicts/cf-4/decisions",
+            json={
+                "decisionType": "mark_unresolved",
+                "selectedClaimId": None,
+                "reasoning": "The autopilot evidence requires renewed reconciliation.",
+                "expectedVersion": 1,
+            },
+        )
+        assert unresolved.status_code == 201
+        state = client.get("/api/case").json()
+        listed = next(s for s in state["reportSections"] if s["id"] == section_id)
+        assert listed["approvalState"] == "draft"
+
+        blocked_reapproval = client.post(
+            f"/api/report-sections/{section_id}/approve",
+            params={"expectedVersion": approved_version},
+        )
+        assert blocked_reapproval.status_code == 422
+
+        restored = client.post(
+            "/api/conflicts/cf-4/decisions",
+            json={
+                "decisionType": "accept_claim_a",
+                "selectedClaimId": None,
+                "reasoning": "The FDR discrete remains the controlling primary evidence.",
+                "expectedVersion": 2,
+            },
+        )
+        assert restored.status_code == 201
+        state = client.get("/api/case").json()
+        listed = next(s for s in state["reportSections"] if s["id"] == section_id)
+        assert listed["approvalState"] == "draft"
+
+        before_reapproval = client.post(
+            "/api/packets", json={"packetType": "production"}
+        ).json()
+        assert section_id not in {
+            entry["sectionId"] for entry in before_reapproval["entries"]
+        }
+
+        reapproved = client.post(
+            f"/api/report-sections/{section_id}/approve",
+            params={"expectedVersion": approved_version},
+        )
+        assert reapproved.status_code == 200
+        after_reapproval = client.post(
+            "/api/packets", json={"packetType": "production"}
+        ).json()
+        entry = next(
+            entry for entry in after_reapproval["entries"] if entry["sectionId"] == section_id
+        )
+        assert entry["disposition"] == "included"
+
     def test_section_validation(self, client):
         login_as(client)
         assert (

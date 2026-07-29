@@ -994,11 +994,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (sessionScope === null) return supersededFailure();
       try {
         const created = await api.postCase(input);
+        if (!isSessionScopeCurrent(sessionScope)) return supersededFailure();
         // Refresh the matter list before switching. Without this the reviewer
         // lands in the new matter while `availableCases` still holds only the
         // old one, so the matter picker (which appears only for more than one)
         // stays hidden and there is no way back short of a page reload.
-        await loadCases(sessionScope);
+        const cases = await loadCases(sessionScope);
+        if (cases === null || !isSessionScopeCurrent(sessionScope)) {
+          return supersededFailure();
+        }
         // Load the new matter through the normal path so its state, epoch and
         // membership are established exactly as any other matter's would be —
         // rather than synthesising a half-populated case locally.
@@ -1014,7 +1018,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         };
       }
     },
-    [captureSessionScope, loadCase, loadCases, supersededFailure],
+    [
+      captureSessionScope,
+      isSessionScopeCurrent,
+      loadCase,
+      loadCases,
+      supersededFailure,
+    ],
   );
 
   const logout = useCallback(async () => {

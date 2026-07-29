@@ -73,7 +73,7 @@ class TestProductionPacket:
 
     def test_disclosure_appears_after_preserving_a_conflict(self, client):
         login_as(client)
-        client.post(
+        decision = client.post(
             "/api/conflicts/cf-1/decisions",
             json={
                 "decisionType": "preserve_both",
@@ -81,6 +81,23 @@ class TestProductionPacket:
                 "expectedVersion": 1,
             },
         )
+        assert decision.status_code == 201
+        section_response = client.post(
+            "/api/report-sections",
+            json={
+                "title": "Preserved timeline evidence",
+                "paragraphRef": "DISC-1",
+                "text": "The competing onset accounts remain preserved for disclosure.",
+                "claimIds": ["clm-a1"],
+            },
+        )
+        assert section_response.status_code == 201, section_response.text
+        section = section_response.json()["section"]
+        reapproval = client.post(
+            f"/api/report-sections/{section['id']}/approve",
+            params={"expectedVersion": section["version"]},
+        )
+        assert reapproval.status_code == 200, reapproval.text
         document = _generate(client, "production").json()["document"]
         assert "Conflict disclosure" in document
         assert "warning horn a good while" in document  # counterpart via disclosure
