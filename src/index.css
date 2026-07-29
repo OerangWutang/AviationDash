@@ -1890,3 +1890,38 @@ button:disabled {
   color: var(--text-faint);
   margin: 4px 0 0;
 }
+
+/* ── Matter intake ─────────────────────────────────────────────────────── */
+
+.new-matter--open {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 10px;
+  background: var(--panel-inset);
+}
+
+.new-matter--open h3 {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.new-matter--open input,
+.new-matter--open select {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 12.5px;
+  width: 100%;
+}
+
+.new-matter__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}

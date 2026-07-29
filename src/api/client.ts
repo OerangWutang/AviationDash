@@ -309,6 +309,23 @@ export const postCaseClaim = (
   },
 ): Promise<ClaimResponse> => post(casePath(caseId, "/claims"), body);
 
+export interface CreateMatterResponse {
+  caseFile: CaseFile;
+  caseMembership: { caseId: string; reviewerId: string; role: ReviewerRole; isActive: boolean };
+  auditEvent?: AuditEvent;
+}
+
+/** Open a new matter. The id is generated server-side and cannot be supplied —
+ *  see migration 0018 for why that property is the security boundary. */
+export const postCase = (body: {
+  name: string;
+  aircraft: string;
+  accidentDate: string;
+  location: string;
+  matterType: string;
+  docketRef: string;
+}): Promise<CreateMatterResponse> => post("/cases", body);
+
 export interface UploadSourceResponse {
   source: SourceDocument;
   /** Byte-identical sources already in this matter, filtered to those the

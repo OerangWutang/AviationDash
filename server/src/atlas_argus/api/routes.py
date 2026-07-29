@@ -27,6 +27,7 @@ from .schemas import (
     LoginRequest,
     MfaCodeRequest,
     NewClaimRequest,
+    NewMatterRequest,
     NewSourceRequest,
     ResetReviewerPasswordRequest,
     SectionRequest,
@@ -273,6 +274,20 @@ def list_cases(
     reviewer: m.Reviewer = Depends(require_reviewer),
 ) -> dict:
     return services.list_cases(session, reviewer)
+
+
+@router.post("/cases", status_code=201)
+def create_matter(
+    body: NewMatterRequest,
+    session: Session = Depends(get_session),
+    reviewer: m.Reviewer = Depends(require_mfa_reviewer),
+) -> dict:
+    """Open a new matter.
+
+    Gated on the global account plane rather than a matter role, because a
+    matter that does not exist yet has no membership to authorize against.
+    """
+    return services.create_matter_op(session, reviewer, body=body.model_dump(by_alias=True))
 
 
 @router.get("/cases/{case_id}")

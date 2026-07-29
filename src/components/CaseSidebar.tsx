@@ -4,6 +4,7 @@ import { computeSectionImpact } from "../domain/report";
 import { formatDate } from "../lib/format";
 import { matchesQueueFilter, QUEUE_FILTERS, type QueueFilter } from "../lib/queueFilter";
 import { ConflictStatusBadge, SeverityDot } from "./StatusBadge";
+import { NewMatterForm } from "./NewMatterForm";
 
 const NAV: { view: View; label: string }[] = [
   { view: "conflicts", label: "Conflict review" },
@@ -69,6 +70,10 @@ export function CaseSidebar() {
           <dt>Status</dt>
           <dd>{caseFile.status}</dd>
         </dl>
+      </section>
+
+      <section className="side-section">
+        <NewMatterForm />
       </section>
 
       <nav className="side-section" aria-label="Case sections">

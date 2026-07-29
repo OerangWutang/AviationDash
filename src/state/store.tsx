@@ -39,6 +39,7 @@ import {
   type ReportSectionInput,
 } from "../domain/reportSections";
 import { computeSectionImpact } from "../domain/report";
+import type { NewMatterInput } from "../domain/matters";
 import * as sample from "../data/sampleCase";
 import * as api from "../api/client";
 import {
@@ -527,6 +528,8 @@ interface StoreValue {
   login: (username: string, password: string) => Promise<SimpleOutcome>;
   /** Server mode: load another matter the reviewer is assigned to. */
   switchCase: (caseId: string) => Promise<SimpleOutcome>;
+  /** Server mode: open a new matter and switch to it. */
+  createMatter: (input: NewMatterInput) => Promise<SimpleOutcome>;
   /** Server mode: revoke the session and return to the sign-in screen. */
   logout: () => Promise<void>;
   /** Server mode: rotate the password (revokes every other session). */
@@ -980,6 +983,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return await loadCase(caseId, sessionScope);
     },
     [captureSessionScope, loadCase, supersededFailure],
+  );
+
+  const createMatter = useCallback(
+    async (input: NewMatterInput): Promise<SimpleOutcome> => {
+      if (stateRef.current.dataMode !== "server") {
+        return { ok: false, error: "Opening a matter is a server-mode capability." };
+      }
+      const sessionScope = captureSessionScope();
+      if (sessionScope === null) return supersededFailure();
+      try {
+        const created = await api.postCase(input);
+        // Refresh the matter list before switching. Without this the reviewer
+        // lands in the new matter while `availableCases` still holds only the
+        // old one, so the matter picker (which appears only for more than one)
+        // stays hidden and there is no way back short of a page reload.
+        await loadCases(sessionScope);
+        // Load the new matter through the normal path so its state, epoch and
+        // membership are established exactly as any other matter's would be —
+        // rather than synthesising a half-populated case locally.
+        dispatch({ type: "boot_loading" });
+        return await loadCase(created.caseFile.id, sessionScope);
+      } catch (error) {
+        return {
+          ok: false,
+          error:
+            error instanceof api.ApiError
+              ? error.message
+              : "Could not open the matter.",
+        };
+      }
+    },
+    [captureSessionScope, loadCase, loadCases, supersededFailure],
   );
 
   const logout = useCallback(async () => {
@@ -1785,6 +1820,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       retryBoot: () => void bootFromServer(),
       login,
       switchCase,
+      createMatter,
       logout,
       changePassword,
       requestPasswordChange: () => dispatch({ type: "password_gate", gate: "voluntary" }),
@@ -1819,6 +1855,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       bootFromServer,
       login,
       switchCase,
+      createMatter,
       logout,
       changePassword,
       startMfaEnrollment,

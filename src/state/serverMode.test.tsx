@@ -412,6 +412,74 @@ describe("server mode", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the matter picker after opening a second matter", async () => {
+    // Regression: creating a matter switched into it but left `availableCases`
+    // holding only the original, so the picker (which renders only for more
+    // than one matter) stayed hidden and the reviewer had no way back to their
+    // other matters without reloading the page.
+    const newCase = {
+      ...sample.caseFile,
+      id: "case-new",
+      name: "Trans-Pacific 118 Runway Excursion",
+      docketRef: "DCA26MA004",
+    };
+    const newSummary = {
+      caseFile: newCase,
+      caseMembership: {
+        caseId: newCase.id,
+        reviewerId: "rev-okafor",
+        role: "Senior Aviation Counsel" as const,
+        isActive: true,
+      },
+    };
+    let matterCreated = false;
+    routeFetch((url, init) => {
+      if (url.endsWith("/api/cases") && init?.method === "POST") {
+        matterCreated = true;
+        return jsonResponse({
+          caseFile: newCase,
+          caseMembership: newSummary.caseMembership,
+        }, 201);
+      }
+      // The list must reflect the new matter once it exists.
+      if (url.endsWith("/api/cases") && init?.method === undefined) {
+        return jsonResponse({
+          cases: matterCreated ? [...caseSummaries(), newSummary] : caseSummaries(),
+        });
+      }
+      if (url.endsWith("/api/cases/case-new")) {
+        return jsonResponse({
+          ...casePayload(),
+          caseFile: newCase,
+          caseMembership: newSummary.caseMembership,
+        });
+      }
+      return null;
+    });
+    renderControlledApp();
+    await screen.findAllByText("Colgan Air Flight 3407");
+
+    // Only one matter so far, so there is nothing to switch between.
+    expect(screen.queryByLabelText("Matter")).toBeNull();
+
+    await act(async () => {
+      await currentStore().createMatter({
+        name: "Trans-Pacific 118 Runway Excursion",
+        aircraft: "Boeing 777-300ER (N881TP)",
+        accidentDate: "2025-11-02",
+        location: "Anchorage, Alaska",
+        matterType: "wrongful_death",
+        docketRef: "DCA26MA004",
+      });
+    });
+
+    const picker = await screen.findByLabelText("Matter");
+    expect(picker).toHaveValue("case-new");
+    expect(
+      [...(picker as HTMLSelectElement).options].map((option) => option.value),
+    ).toContain(sample.caseFile.id);
+  });
+
   it("switches between assigned matters", async () => {
     const secondCase = {
       ...sample.caseFile,

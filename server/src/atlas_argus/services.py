@@ -29,13 +29,14 @@ from .db import models as m
 from .db.seed import iso_z
 from .domain import claims as claims_rules
 from .domain import decisions as decision_rules
+from .domain import matters as matter_rules
 from .domain import quotes as quote_rules
 from .domain import report as report_rules
 from .domain import report_sections as section_rules
 from .domain import sources as source_rules
 from .domain import types as t
 from .domain.eligibility import compute_claim_eligibility
-from .domain.permissions import decision_permission, packet_permission
+from .domain.permissions import admin_permission, decision_permission, packet_permission
 from .integrity import (
     account_audit_event_content,
     audit_event_content,
@@ -539,6 +540,88 @@ def serialize_case_summary(case: m.CaseFile, member: m.CaseMember) -> dict:
     return {
         "caseFile": serialize_case_file(case),
         "caseMembership": serialize_case_member(member),
+    }
+
+
+def create_matter_op(
+    session: Session,
+    reviewer: m.Reviewer,
+    *,
+    body: dict,
+) -> dict:
+    """Open a new matter with the creating reviewer as its Senior counsel.
+
+    Authorization is on the *global* plane, not a matter role: a matter that
+    does not exist yet has no membership to check against. That makes this the
+    same authority as reviewer-directory administration, which is why it
+    requires a global Senior Aviation Counsel and a verified MFA session (the
+    route enforces MFA).
+
+    The rows are created through ``atlas_argus_create_matter`` rather than the
+    ORM because row-level security on ``case_file`` and ``case_member`` both
+    require an existing active membership — a circular requirement for a new
+    matter. See migration 0018 for why that function is safe: it generates the
+    id itself, so it cannot be aimed at a matter that already exists.
+    """
+    allowed, reason = admin_permission(reviewer.role)
+    if not allowed:
+        raise t.PermissionDenied(reason or "Matter creation requires senior counsel.")
+
+    fields = matter_rules.validate_new_matter(
+        name=body.get("name"),
+        aircraft=body.get("aircraft"),
+        accident_date=body.get("accidentDate"),
+        location=body.get("location"),
+        matter_type=body.get("matterType"),
+        docket_ref=body.get("docketRef"),
+    )
+
+    case_id = session.execute(
+        text(
+            "SELECT atlas_argus_create_matter("
+            ":name, :aircraft, :accident_date, :location, "
+            ":matter_type, :status, :docket_ref)"
+        ),
+        {
+            "name": fields["name"],
+            "aircraft": fields["aircraft"],
+            "accident_date": fields["accidentDate"],
+            "location": fields["location"],
+            "matter_type": fields["matterType"],
+            "status": fields["status"],
+            "docket_ref": fields["docketRef"],
+        },
+    ).scalar_one()
+    session.flush()
+
+    case = session.get(m.CaseFile, case_id)
+    if case is None:  # pragma: no cover - the function raises rather than no-op
+        raise t.DomainError("Matter creation did not produce a matter.")
+    membership = _case_membership(session, reviewer, case_id)
+    if membership is None:  # pragma: no cover - created in the same statement
+        raise t.DomainError("Matter creation did not produce a membership.")
+
+    # Appended through the ordinary path so the matter's hash chain is rooted
+    # by the same code every other event uses.
+    event = _append_audit(
+        session,
+        case_id=case_id,
+        at=_now(),
+        actor=reviewer,
+        action="matter opened",
+        subject_type="reviewer",
+        subject_id=reviewer.id,
+        new_status="active",
+        detail=(
+            f"Matter {fields['name']} ({fields['docketRef']}) opened by "
+            f"{reviewer.name}, who holds the initial active Senior Aviation "
+            f"Counsel membership."
+        ),
+    )
+    return {
+        "caseFile": serialize_case_file(case),
+        "caseMembership": serialize_case_member(membership),
+        "auditEvent": serialize_audit_event(event),
     }
 
 
