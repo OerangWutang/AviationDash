@@ -20,6 +20,11 @@ dependencies = [
     "pdf2image>=1.17",
     "pytesseract>=0.3.10",
     "pillow>=10.0",
+    # Controlled PDF export. BSD-3; its pyphen dependency is tri-licensed
+    # GPL/LGPL/MPL, so LGPL or MPL applies and hyphenation (the only path that
+    # loads pyphen's GPL dictionaries) is never enabled by the packet
+    # stylesheet. Needs Pango/HarfBuzz/fontconfig and real fonts in the image.
+    "weasyprint>=66",
 ]
 
 [project.optional-dependencies]

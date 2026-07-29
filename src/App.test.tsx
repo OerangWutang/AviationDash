@@ -308,9 +308,12 @@ describe("Atlas Argus conflict review workflow", () => {
     const manifest = screen.getByRole("region", { name: "Packet manifest" });
     expect(within(manifest).getByText("Probable Cause")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Download packet/ }),
+      screen.getByRole("button", { name: /Download packet \(\.html\)/ }),
     ).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Print \/ save as PDF/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Print preview/ })).toBeEnabled();
+    // Local mode has no server to render a controlled PDF, so it must not
+    // offer one — a dead control here would be worse than its absence.
+    expect(screen.queryByRole("button", { name: /Download packet \(\.pdf\)/ })).toBeNull();
     const frame = screen.getByTitle("Evidence packet preview");
     expect(frame).toHaveAttribute("srcdoc", expect.stringContaining("Evidence Packet"));
 

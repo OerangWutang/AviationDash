@@ -142,7 +142,7 @@ def packet_artifact_content(artifact: Any) -> dict:
             "manifestSha256": manifest_sha256,
         }
     )
-    return {
+    content = {
         "schema": "atlas_argus.packet_artifact_row.v1",
         "id": artifact.id,
         "caseId": artifact.case_id,
@@ -157,6 +157,20 @@ def packet_artifact_content(artifact: Any) -> dict:
         "manifestSha256": manifest_sha256,
         "artifactSha256": artifact_sha256,
     }
+    # Included only when a PDF exists, and deliberately so. Adding the key
+    # unconditionally — even as null — would change the canonical content of
+    # every artifact generated before PDF export existed, and therefore break
+    # chain verification for all of them. Omitting it leaves those artifacts
+    # byte-identical to what they hashed to originally.
+    #
+    # This is not a hole: the column is on an append-only, UPDATE-revoked
+    # table, and clearing it on an artifact that had a PDF changes the content
+    # back, which no longer matches the stored integrity_hash. The chain
+    # reports it.
+    pdf_hash = getattr(artifact, "pdf_sha256", None)
+    if pdf_hash:
+        content["pdfSha256"] = pdf_hash
+    return content
 
 
 def extraction_manifest(

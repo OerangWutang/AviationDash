@@ -45,6 +45,7 @@ Deployment-specific controls and independent review remain the operator's work.
 | Server disclosure doctrine | The backend builds, sanitizes, redacts, renders, hashes, and persists server packets. It does not serialize withholding-source/claim fields into the production document/manifest. It cannot semantically detect privileged substance manually repeated in approved report prose; Senior approval remains a disclosure boundary. A client can also fabricate an unrelated local file without server provenance. |
 | Report approval | Server production packets include only an eligible section whose active revision is `approved`. Approval requires verified MFA, a Senior Aviation Counsel matter role, and the current `expectedVersion`; any edit creates a revision and returns the section to `draft`. |
 | Production sanitization | Production document and persisted manifest omit generator identity and internal reviewer assessments/reasoning. Withheld/excluded entries use packet-local opaque references and generic metadata, omit revision/claim identifiers, and keep privileged claims out of cited-claim/appendix output; the privilege log is source-identity-only. Non-cleared artifact readers do not receive generator ID/name/role in list/detail metadata. Internal packets remain fully attributed and require privilege clearance to reopen. |
+| Controlled PDF export | Packet generation renders the stored HTML document to a paginated PDF server-side: fixed Letter page box, running classification header, and every page carrying the packet ID, page number, and body-hash prefix so a detached page stays identifiable. The PDF is stored on the artifact, hashed, and its hash joins the packet integrity chain. Download applies the same access rules as reading the artifact and refuses to serve a packet that fails verification. Production refuses to boot without the renderer, so disclosure output cannot quietly revert to browser print-to-PDF. |
 | Artifact retrieval | MFA-protected per-matter routes list, reopen, and verify stored artifacts. Stored document, sanitized manifest, hashes, and integrity result are exposed according to matter privilege clearance. The UI quarantines a failed-integrity artifact by disabling open/download/print. |
 | Append-only records | PostgreSQL triggers reject update/delete for case audit, account audit, review decisions, report revisions, and packet artifacts. The runtime role is also denied update/delete privileges on these tables. |
 | Hash chains | Canonical SHA-256 chains cover case audit, global account audit, review decisions, per-section revisions, and each matter's packet sequence. Packet verification recomputes body/document/manifest/artifact relationships. Case/account verification endpoints report roots and issues. |
@@ -146,8 +147,14 @@ configuration. There is no production seed-password setting.
    Deliberately not an API route — the runtime role cannot even see a stranded
    matter, and giving it that power would extend it to a stolen runtime
    credential per gap 3.
-9. **Controlled PDF output is not implemented.** Export is self-contained HTML
-   and browser print-to-PDF.
+9. **PDF output depends on the installed renderer and fonts.** Packets are now
+   rendered server-side to a paginated PDF, stored, and hashed. But the exact
+   bytes depend on the WeasyPrint, fontTools, Pango and font versions in the
+   image, so re-rendering an old packet on a newer image may not reproduce it.
+   Verification therefore recomputes the hash of the **stored** bytes and never
+   re-renders. Rendering is byte-reproducible for a fixed image (font
+   subsetting is pinned via `SOURCE_DATE_EPOCH`), which is what makes a
+   rendering regression visible in CI.
 10. **Database-level privilege isolation is partial.** The ingestion tables
     (`source_document_file`, `source_extraction_run`, `source_page_extraction`)
     have privilege-aware RLS mirroring `_source_visible_to`. The pre-existing
@@ -186,7 +193,18 @@ configuration. There is no production seed-password setting.
     engine's interpretation of the image. The UI always names the extraction
     method alongside the badge so the two are never read as equal-strength
     evidence, and low-confidence matches are routed to human attestation.
-17. **Quote normalisation includes a heuristic.** Line-wrap de-hyphenation
+17. **PDF rendering pulls in a tri-licensed dependency.** WeasyPrint is BSD-3,
+    but depends on pyphen, which is GPL2+/LGPL2.1+/MPL 1.1. LGPL or MPL is
+    selectable and applies to an unmodified imported library, and the packet
+    stylesheet never enables `hyphens: auto`, which is the only path that loads
+    pyphen's separately-licensed dictionaries. Confirm that conclusion with
+    counsel, as with poppler-utils.
+18. **Missing fonts degrade silently.** The packet stylesheet names serif and
+    sans families. On an image without them, text falls back and repaginates
+    while still producing a plausible-looking PDF. The image installs
+    metric-compatible families and a deployment test asserts it, but a custom
+    image that drops them would not fail loudly.
+19. **Quote normalisation includes a heuristic.** Line-wrap de-hyphenation
     joins `cross-\ncheck` into `crosscheck`, which is right for PDF line breaks
     and wrong for a genuinely hyphenated compound broken across lines. It is
     applied because the former is far more common in extracted text, but it is

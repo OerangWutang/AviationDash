@@ -22,6 +22,7 @@ from .config import (
     max_packet_document_bytes,
     max_packet_entries,
     max_packet_manifest_bytes,
+    max_packet_pdf_bytes,
     max_source_upload_bytes,
     min_ocr_confidence_for_auto_verify,
 )
@@ -541,6 +542,52 @@ def serialize_case_summary(case: m.CaseFile, member: m.CaseMember) -> dict:
         "caseFile": serialize_case_file(case),
         "caseMembership": serialize_case_member(member),
     }
+
+
+def _render_packet_pdf(
+    packet,
+    document: str,
+    body_sha256: str,
+    *,
+    generated_at: datetime,
+) -> tuple[bytes | None, str | None]:
+    """Render the packet's paginated PDF, or explain why there isn't one.
+
+    Two failure modes, treated differently on purpose.
+
+    A **document that will not render** — too large, or a renderer error on
+    this specific content — fails the whole generation. Handing back a packet
+    that silently lacks its production artifact would leave the reviewer
+    believing they had something producible, and they would find out at
+    disclosure. That is the worst possible moment.
+
+    A **runtime with no PDF support at all** degrades instead: the packet is
+    still generated, the artifact records that it has no PDF, and the audit
+    event says so. This path exists for development and is closed off in
+    production by ``production_config_errors``, which refuses to boot a
+    production deployment that cannot render — so the capability can never be
+    missing silently where it matters.
+    """
+    from .packet_pdf import (
+        PdfRenderingUnavailable,
+        PdfTooLarge,
+        pdf_sha256,
+        render_packet_pdf,
+    )
+
+    try:
+        pdf = render_packet_pdf(
+            packet,
+            document,
+            body_sha256,
+            generated_at=generated_at,
+            max_bytes=max_packet_pdf_bytes(),
+        )
+    except PdfRenderingUnavailable:
+        return None, None
+    except PdfTooLarge as exc:
+        raise t.ValidationFailure(str(exc)) from exc
+    return pdf, pdf_sha256(pdf)
 
 
 def create_matter_op(
@@ -1209,18 +1256,51 @@ def verify_packet_integrity(
     )
     chain = _verify_packet_artifact_chain(rows)
     packet_issues = [issue for issue in chain["issues"] if issue["id"] == packet_id]
+
+    # Recompute from the stored bytes rather than re-rendering. Re-rendering
+    # would compare against whatever the currently installed WeasyPrint, font
+    # and Pango versions produce today, which is not what was disclosed; the
+    # question this answers is whether the artifact still is what it was.
+    pdf_issue = _verify_stored_pdf(session, artifact)
+    if pdf_issue is not None:
+        packet_issues = [*packet_issues, pdf_issue]
+
     return {
-        "ok": chain["ok"],
+        "ok": chain["ok"] and pdf_issue is None,
         "caseId": artifact.case_id,
         "packetId": artifact.id,
         "packetType": artifact.packet_type,
         "generatedAt": iso_z(artifact.generated_at),
         "bodySha256": artifact.body_sha256,
         "artifactSha256": artifact.manifest.get("artifactSha256"),
+        "pdfSha256": artifact.pdf_sha256,
+        "hasPdf": artifact.pdf_sha256 is not None,
         "packetIntegrityHash": artifact.integrity_hash,
         "packetIssues": packet_issues,
         "chain": chain,
     }
+
+
+def _verify_stored_pdf(session: Session, artifact: m.PacketArtifact) -> dict | None:
+    """Confirm the stored PDF still hashes to what was recorded."""
+    if artifact.pdf_sha256 is None:
+        return None
+    stored = session.execute(
+        select(m.PacketArtifact.pdf).where(m.PacketArtifact.id == artifact.id)
+    ).scalar_one_or_none()
+    if stored is None:
+        return {
+            "id": artifact.id,
+            "kind": "packet_pdf",
+            "issue": "the recorded PDF is missing",
+        }
+    if hashlib.sha256(stored).hexdigest() != artifact.pdf_sha256:
+        return {
+            "id": artifact.id,
+            "kind": "packet_pdf",
+            "issue": "the stored PDF does not match its recorded hash",
+        }
+    return None
 
 
 def _packet_issue_ids(verification: dict) -> set[str]:
@@ -1253,6 +1333,16 @@ def serialize_packet_artifact_summary(
         "documentSha256": manifest.get("documentSha256"),
         "manifestSha256": manifest.get("manifestSha256"),
         "artifactSha256": manifest.get("artifactSha256"),
+        "pdfSha256": artifact.pdf_sha256,
+        #: Artifacts generated before PDF export exist and are valid; they
+        #: simply have no PDF, and the UI must say so rather than offering a
+        #: download that cannot work.
+        "hasPdf": artifact.pdf_sha256 is not None,
+        "pdfFilename": (
+            artifact.filename.rsplit(".", 1)[0] + ".pdf"
+            if artifact.pdf_sha256 is not None
+            else None
+        ),
         "packetIntegrityHash": artifact.integrity_hash,
         "stats": {
             "included": sum(
@@ -1327,6 +1417,58 @@ def list_packet_artifacts(
             for row in page
         ],
     }
+
+
+def get_packet_pdf(
+    session: Session,
+    reviewer: m.Reviewer,
+    *,
+    packet_id: str,
+    case_id: str | None = None,
+) -> tuple[bytes, str]:
+    """Return the stored PDF bytes and a safe download filename.
+
+    Applies exactly the same access rules as reading the artifact back — an
+    internal packet still needs privilege clearance — and additionally refuses
+    to serve a PDF whose integrity check fails. Handing over a document that
+    the system itself cannot vouch for is worse than handing over nothing,
+    because the recipient has no way to know.
+    """
+    from .packet_pdf import content_disposition_filename
+
+    artifact = session.get(m.PacketArtifact, packet_id)
+    if artifact is None:
+        raise t.NotFound("Packet artifact not found.")
+    if case_id is not None and artifact.case_id != case_id:
+        raise t.NotFound("Packet artifact not found.")
+    _case, membership = _case_for_reviewer(session, reviewer, artifact.case_id)
+    if artifact.packet_type == "internal" and not _has_privilege_clearance(membership.role):
+        raise t.PermissionDenied("Privilege clearance is required for this evidence.")
+
+    if artifact.pdf_sha256 is None:
+        raise t.NotFound(
+            "This packet has no PDF. It was generated before controlled PDF "
+            "export existed; regenerate the packet to produce one."
+        )
+
+    verification = verify_packet_integrity(
+        session, reviewer, packet_id=artifact.id, case_id=artifact.case_id
+    )
+    if not verification["ok"]:
+        raise t.PermissionDenied(
+            "This packet failed its integrity check and cannot be downloaded."
+        )
+
+    stored = session.execute(
+        select(m.PacketArtifact.pdf).where(m.PacketArtifact.id == artifact.id)
+    ).scalar_one_or_none()
+    if stored is None:  # pragma: no cover - verification above already caught it
+        raise t.NotFound("Packet artifact not found.")
+
+    filename = content_disposition_filename(
+        artifact.filename.rsplit(".", 1)[0] + ".pdf"
+    )
+    return bytes(stored), filename
 
 
 def get_packet_artifact(
@@ -3076,6 +3218,15 @@ def generate_packet_op(
         raise t.ValidationFailure(
             f"Packet artifact is {artifact_bytes} bytes; limit is {artifact_limit}."
         )
+
+    # Rendered from the document that was just hashed, so the PDF and the HTML
+    # cannot describe different packets. Both are stored: the PDF is what gets
+    # produced to opposing counsel, and an artifact record that could not
+    # reproduce it byte-for-byte would not be much of a record.
+    pdf_bytes, pdf_hash = _render_packet_pdf(
+        packet, document, sha256, generated_at=now
+    )
+
     artifact = m.PacketArtifact(
         id=packet.packet_id,
         case_id=packet.case.id,
@@ -3088,6 +3239,8 @@ def generate_packet_op(
         body_sha256=sha256,
         document=document,
         manifest=manifest,
+        pdf=pdf_bytes,
+        pdf_sha256=pdf_hash,
         previous_integrity_hash=previous_packet_hash,
         integrity_hash="",
     )
@@ -3109,6 +3262,7 @@ def generate_packet_op(
             f"{packet_type} packet: {packet.stats['included']} section(s) included, "
             f"{packet.stats['excluded']} excluded, {packet.stats['withheld']} withheld "
             f"under privilege. Body SHA-256 {sha256}. Artifact SHA-256 {artifact_sha256}."
+            + (f" PDF SHA-256 {pdf_hash}." if pdf_hash else " PDF not rendered.")
         ),
     )
     return {

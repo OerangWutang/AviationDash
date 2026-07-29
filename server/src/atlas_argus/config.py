@@ -39,6 +39,10 @@ DEFAULT_MAX_TOTAL_EXTRACTED_TEXT_BYTES = 24 * 1024 * 1024
 DEFAULT_MAX_CONCURRENT_SOURCE_INGESTIONS = 2
 DEFAULT_SOURCE_CHILD_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
 DEFAULT_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY = 70
+#: A paginated PDF is several times the size of its HTML source (embedded font
+#: subsets alone are tens of kilobytes), so this is its own ceiling rather than
+#: a share of the artifact limit.
+DEFAULT_MAX_PACKET_PDF_BYTES = 20 * 1024 * 1024
 #: Headroom for the JSON envelope and metadata fields around the base64 blob.
 SOURCE_REQUEST_METADATA_OVERHEAD_BYTES = 16 * 1024
 #: A child must fit the decoded PDF, a rendered page raster, and OCR working
@@ -66,6 +70,7 @@ _BOUNDED_LIMITS = {
         4 * 1024 * 1024 * 1024,
     ),
     "ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY": (0, 100),
+    "ATLAS_ARGUS_MAX_PACKET_PDF_BYTES": (64 * 1024, 128 * 1024 * 1024),
 }
 
 
@@ -140,6 +145,15 @@ def max_packet_artifact_bytes() -> int:
         DEFAULT_MAX_PACKET_ARTIFACT_BYTES,
         minimum=4096,
         maximum=MAX_CONFIGURED_BYTES,
+    )
+
+
+def max_packet_pdf_bytes() -> int:
+    return _bounded_int(
+        "ATLAS_ARGUS_MAX_PACKET_PDF_BYTES",
+        DEFAULT_MAX_PACKET_PDF_BYTES,
+        minimum=64 * 1024,
+        maximum=128 * 1024 * 1024,
     )
 
 
@@ -354,7 +368,28 @@ def production_config_errors(*, require_migration_url: bool = False) -> list[str
         if error := _configured_limit_error(name, minimum, maximum):
             errors.append(error)
     errors.extend(_ingestion_budget_errors())
+    errors.extend(_pdf_capability_errors())
     return errors
+
+
+def _pdf_capability_errors() -> list[str]:
+    """Refuse to boot production without PDF rendering.
+
+    Packet generation degrades gracefully when the renderer is missing, which
+    is right for development. In production that degradation would mean
+    disclosure packets quietly reverting to browser print-to-PDF — the exact
+    uncontrolled output this replaced. Better to fail at startup, where an
+    operator sees it, than at the moment counsel needs to produce.
+    """
+    from .packet_pdf import pdf_available
+
+    if not pdf_available():
+        return [
+            "PDF rendering is unavailable: WeasyPrint and its system libraries "
+            "(Pango, HarfBuzz, fontconfig) plus document fonts must be installed "
+            "for production packet generation."
+        ]
+    return []
 
 
 def _ingestion_budget_errors() -> list[str]:

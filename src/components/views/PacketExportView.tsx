@@ -13,6 +13,7 @@ import type { SectionStatus } from "../../domain/report";
 import { effectiveMatterRole, useStore } from "../../state/store";
 import { formatDateTime, truncateHash } from "../../lib/format";
 import { SectionStatusBadge } from "../StatusBadge";
+import { ApiError, fetchPacketPdf } from "../../api/client";
 
 /** What the manifest/preview needs, whether the packet was assembled locally
  *  or by the server. */
@@ -69,6 +70,9 @@ export function PacketExportView() {
   const matterRole = effectiveMatterRole(state);
   const [packetType, setPacketType] = useState<PacketType>("internal");
   const [generated, setGenerated] = useState<GeneratedView | null>(null);
+  const serverMode = state.dataMode === "server";
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const [quarantined, setQuarantined] = useState<QuarantinedPacket | null>(null);
   const [generating, setGenerating] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -220,6 +224,32 @@ export function PacketExportView() {
     anchor.download = generated.filename;
     anchor.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!generated || !state.caseFile) return;
+    setPdfError(null);
+    setDownloadingPdf(true);
+    try {
+      const { blob, filename } = await fetchPacketPdf(
+        state.caseFile.id,
+        generated.packetId,
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setPdfError(
+        error instanceof ApiError
+          ? error.message
+          : "Could not download the packet PDF.",
+      );
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const handlePrint = () => {
@@ -478,16 +508,48 @@ export function PacketExportView() {
               ))}
             </ul>
             <div className="save-row">
-              <button type="button" className="btn-primary" onClick={handleDownload}>
+              {serverMode && (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => void handleDownloadPdf()}
+                  disabled={downloadingPdf}
+                >
+                  {downloadingPdf ? "Preparing PDF…" : "Download packet (.pdf)"}
+                </button>
+              )}
+              <button
+                type="button"
+                className={serverMode ? "btn-secondary" : "btn-primary"}
+                onClick={handleDownload}
+              >
                 Download packet (.html)
               </button>
               <button type="button" className="btn-secondary" onClick={handlePrint}>
-                Print / save as PDF
+                Print preview
               </button>
               <span className="save-blocker">
-                The downloaded file is self-contained; the preview below is the same
-                document, byte for byte.
+                {serverMode ? (
+                  <>
+                    The PDF is the produced artifact: it was paginated and hashed
+                    on the server, and every page carries the packet ID and body
+                    hash. Printing from this preview produces a different document
+                    that depends on your browser and page setup — use it to read,
+                    not to produce.
+                  </>
+                ) : (
+                  <>
+                    Local mode has no server to render a controlled PDF, so this
+                    exports the self-contained HTML. A produced, paginated,
+                    hash-stamped PDF requires server mode.
+                  </>
+                )}
               </span>
+              {pdfError && (
+                <p className="save-error" role="alert">
+                  {pdfError}
+                </p>
+              )}
             </div>
           </section>
 

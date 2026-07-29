@@ -110,3 +110,18 @@ def test_production_api_runs_an_init_to_reap_orphans(api_service):
     assert api_service.get("init") is True, (
         "the api service needs `init: true` so killed OCR subprocesses are reaped"
     )
+
+
+def test_image_installs_pdf_rendering_libraries_and_fonts():
+    """WeasyPrint needs Pango; the packet stylesheet needs real fonts. Missing
+    fonts do not fail — they silently fall back and repaginate, which is worse
+    than an error because the PDF still looks plausible."""
+    dockerfile = DOCKERFILE.read_text()
+    for package in ("libpango-1.0-0", "fontconfig", "fonts-liberation"):
+        assert package in dockerfile, f"{package} is not installed in the image"
+
+
+def test_ci_installs_the_same_pdf_libraries_and_fonts():
+    workflow = CI_WORKFLOW.read_text()
+    for package in ("libpango-1.0-0", "fonts-liberation"):
+        assert package in workflow, f"{package} is missing from CI"

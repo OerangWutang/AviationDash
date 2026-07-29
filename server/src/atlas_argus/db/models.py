@@ -629,6 +629,12 @@ class PacketArtifact(Base):
     body_sha256: Mapped[str] = mapped_column(String)
     document: Mapped[str] = mapped_column(Text)
     manifest: Mapped[dict] = mapped_column(JSONB)
+    #: The paginated PDF exactly as produced. Deferred so listing artifacts
+    #: never drags megabytes of document per row. NULL for artifacts generated
+    #: before PDF export existed — deliberately not back-filled, since
+    #: re-rendering one now would invent a document that was never served.
+    pdf: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
+    pdf_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
     previous_integrity_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     integrity_hash: Mapped[str] = mapped_column(String)
 

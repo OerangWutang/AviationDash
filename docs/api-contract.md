@@ -172,6 +172,7 @@ production process somehow starts without one.
 | Revise report section | `PUT /cases/{case_id}/report-sections/{id}` | `200` | `401`, `403`, `404`, `409`, `422` |
 | Approve report section | `POST /cases/{case_id}/report-sections/{id}/approve?expectedVersion=N` | `200` | `401`, `403`, `404`, `409`, `422` |
 | Verify case integrity | `GET /cases/{case_id}/audit/verify` | `200` | `401`, `403`, `404` |
+| Download packet PDF | `GET /cases/{case_id}/packets/{packet_id}/pdf` | `200` | `401`, `403`, `404` |
 | Upload source document | `POST /cases/{case_id}/sources` | `201` | `401`, `403`, `404`, `409`, `413`, `422`, `503` |
 | List extracted pages | `GET /cases/{case_id}/sources/{source_id}/pages` | `200` | `401`, `403`, `404` |
 | Attest to a claim quote | `POST /cases/{case_id}/claims/{claim_id}/verify-quote` | `200` | `401`, `403`, `404`, `422` |
@@ -447,6 +448,34 @@ boundary against a stolen runtime database credential or arbitrary SQL, because
 that caller can set the custom reviewer-context setting. Protect and rotate the
 runtime credential and treat SQL-injection prevention as part of isolation.
 
+## Controlled PDF export
+
+Generating a packet also renders it server-side to a paginated PDF and stores
+it with the artifact. `GET /cases/{case_id}/packets/{packet_id}/pdf` returns
+`application/pdf` with `Cache-Control: no-store`.
+
+The PDF is the produced document, not a convenience rendering: fixed Letter
+pages, a running classification header, and the packet ID, `Page N of M`, and
+body-hash prefix on every page, so a page separated from the bundle remains
+identifiable.
+
+Access matches reading the artifact — an internal packet still requires
+privilege clearance — with one addition: a packet whose integrity check fails
+returns `403` rather than the bytes. Serving a document the system cannot
+vouch for is worse than serving none, because the recipient cannot tell.
+
+`404` with a "regenerate the packet" message means the artifact predates this
+feature. Those are deliberately not back-filled: re-rendering one now would
+manufacture a document that was never generated, served, or audited.
+`hasPdf`, `pdfSha256` and `pdfFilename` on artifact listings say which is which.
+
+**Verification recomputes the hash of the stored bytes and never re-renders.**
+Output legitimately depends on the installed renderer and font versions, so
+re-rendering would compare a disclosed document against what today's image
+would produce. Rendering is byte-reproducible for a fixed image — font
+subsetting is pinned with `SOURCE_DATE_EPOCH` — which is what makes a
+rendering regression detectable in CI.
+
 ## Request and artifact limits
 
 State-changing request bodies are capped by
@@ -478,7 +507,8 @@ Ingestion limits:
 - `ATLAS_ARGUS_MAX_TOTAL_EXTRACTED_TEXT_BYTES` (default `25165824`);
 - `ATLAS_ARGUS_MAX_CONCURRENT_SOURCE_INGESTIONS` (default `2`, **per process**);
 - `ATLAS_ARGUS_SOURCE_CHILD_MEMORY_LIMIT_BYTES` (default `536870912`); and
-- `ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY` (default `70`, percent).
+- `ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY` (default `70`, percent); and
+- `ATLAS_ARGUS_MAX_PACKET_PDF_BYTES` (default `20971520`).
 
 The per-page cap alone does not bound memory — 500 pages × 1 MiB is still half a
 gigabyte — so the total is enforced as a running budget; pages past it are

@@ -309,6 +309,50 @@ export const postCaseClaim = (
   },
 ): Promise<ClaimResponse> => post(casePath(caseId, "/claims"), body);
 
+/** Fetch the server-rendered packet PDF.
+ *
+ *  Deliberately not a plain link: the endpoint requires the session cookie and
+ *  an MFA-verified session, and it refuses to serve an artifact that fails its
+ *  integrity check — so the response has to be inspected rather than handed to
+ *  the browser's downloader, which would silently save an error page as a
+ *  ".pdf".
+ */
+export async function fetchPacketPdf(
+  caseId: string,
+  packetId: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const base = baseUrl();
+  if (base === null) {
+    throw new ApiError("API is not configured (VITE_API_URL unset).", null);
+  }
+  const response = await fetch(
+    `${base}/api${casePath(caseId, `/packets/${encodeURIComponent(packetId)}/pdf`)}`,
+    { credentials: "include" },
+  );
+  if (!response.ok) {
+    let detail = `Could not download the packet PDF (${response.status}).`;
+    try {
+      const body: unknown = await response.json();
+      if (
+        typeof body === "object" &&
+        body !== null &&
+        typeof (body as { detail?: unknown }).detail === "string"
+      ) {
+        detail = (body as { detail: string }).detail;
+      }
+    } catch {
+      // keep the generic message
+    }
+    throw new ApiError(detail, response.status);
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return {
+    blob: await response.blob(),
+    filename: match?.[1] ?? `${packetId}.pdf`,
+  };
+}
+
 export interface CreateMatterResponse {
   caseFile: CaseFile;
   caseMembership: { caseId: string; reviewerId: string; role: ReviewerRole; isActive: boolean };

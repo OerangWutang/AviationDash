@@ -52,9 +52,15 @@ jobs:
       - name: Install PDF and OCR system packages
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y poppler-utils tesseract-ocr
+          sudo apt-get install --no-install-recommends -y \
+            poppler-utils tesseract-ocr \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b fontconfig \
+            fonts-liberation fonts-dejavu-core
+          sudo fc-cache -f
           tesseract --version
           pdftoppm -v
+          # Fonts change pagination, so record which ones the run had.
+          fc-list : family | sort -u | head -20
       - run: python -m venv server/.venv
       - run: server/.venv/bin/python -m pip install -r server/requirements.lock.txt
       - run: server/.venv/bin/python -m pip install -e "server[dev]"

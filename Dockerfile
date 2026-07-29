@@ -24,8 +24,25 @@ RUN useradd --system --uid 999 --create-home app
 # an image, tesseract-ocr reads it. pdf2image and pytesseract are only thin
 # wrappers — without the binaries, every scanned page fails with
 # `ocr_unavailable` rather than being read.
+#
+# WeasyPrint (controlled PDF export) needs Pango/HarfBuzz/fontconfig, and it
+# needs real fonts. The packet stylesheet asks for Georgia/Times/Arial; with no
+# fonts installed the text silently falls back and paginates differently, which
+# a byte-count assertion would never catch. fonts-liberation is metrically
+# compatible with Arial/Times New Roman/Courier New, so line breaks land where
+# the stylesheet intends.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y poppler-utils tesseract-ocr \
+    && apt-get install --no-install-recommends -y \
+        poppler-utils \
+        tesseract-ocr \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libharfbuzz0b \
+        libffi8 \
+        fontconfig \
+        fonts-liberation \
+        fonts-dejavu-core \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server/pyproject.toml server/requirements.lock.txt ./server/

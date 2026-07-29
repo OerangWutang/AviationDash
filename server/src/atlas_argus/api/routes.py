@@ -688,6 +688,29 @@ def get_case_packet(
     )
 
 
+@router.get("/cases/{case_id}/packets/{packet_id}/pdf")
+def download_case_packet_pdf(
+    case_id: str,
+    packet_id: str,
+    session: Session = Depends(get_session),
+    reviewer: m.Reviewer = Depends(require_mfa_reviewer),
+) -> Response:
+    """Download the packet exactly as it was rendered and hashed."""
+    pdf, filename = services.get_packet_pdf(
+        session, reviewer, packet_id=packet_id, case_id=case_id
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # Evidence, not a cacheable asset — matches the API-wide policy.
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.get("/audit/verify")
 def verify_default_case_audit(
     session: Session = Depends(get_session),

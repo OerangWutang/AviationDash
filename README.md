@@ -175,7 +175,16 @@ Senior approval remains a substantive disclosure boundary. A client can also
 fabricate an unrelated local file; it will not have the server's stored
 artifact, audit, or integrity-chain provenance.
 
-The rendered packet is a self-contained, print-ready HTML document. Its body
+Generating a packet also renders a **paginated PDF** server-side and stores it
+with the artifact. That PDF is the produced document: fixed Letter pages, a
+running classification header, and the packet ID, page number, and body-hash
+prefix on every page, so a page separated from the bundle is still
+identifiable. Its hash joins the packet integrity chain, and download is
+refused for any artifact that fails verification. Printing the HTML preview
+from a browser remains available for reading, but produces a different document
+that depends on the browser and page setup — it is not the produced artifact.
+
+The rendered packet is also a self-contained, print-ready HTML document. Its body
 SHA-256 is embedded in the footer. The server also records document, manifest,
 artifact, and packet-chain hashes. These hashes detect inconsistency; they are
 not an external digital signature, trusted timestamp, or WORM guarantee.
@@ -336,6 +345,7 @@ docs/deploy/                 release, initialization, security and evidence chec
   scaling out would require.
 - Report text uses a structural cited-claims list; inline bracket references
   remain an authorial convention.
-- Export is HTML/print-to-PDF rather than a controlled paginated PDF service.
+- PDF export is byte-reproducible only for a fixed image; verification checks
+  the stored bytes rather than re-rendering.
 - MFA recovery is administrator-mediated only: there are no backup codes or
   self-service reset, and a second MFA-verified global Senior is required.
