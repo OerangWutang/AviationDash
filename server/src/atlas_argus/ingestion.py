@@ -300,6 +300,24 @@ def _truncate_text(text: str, limit_bytes: int) -> tuple[str, bool]:
     return encoded[:limit_bytes].decode("utf-8", errors="ignore"), True
 
 
+def _bounded_page_text(
+    text: str, limits: ExtractionLimits, total_text_bytes: int
+) -> tuple[str, bool, int]:
+    """Apply both the per-page and remaining document text budgets.
+
+    The aggregate limit must be part of each truncation, not merely checked at
+    the start of a page. Otherwise the page that crosses the limit can exceed
+    it by an entire per-page allowance. Failed OCR pages retain native fallback
+    text, so they must pass through the same bounds too.
+    """
+    remaining = max(0, limits.max_total_text_bytes - total_text_bytes)
+    bounded, truncated = _truncate_text(
+        text,
+        min(limits.max_text_bytes_per_page, remaining),
+    )
+    return bounded, truncated, len(bounded.encode("utf-8"))
+
+
 def _ocr_page(pdf_bytes: bytes, page_number: int, limits: ExtractionLimits) -> tuple[str, int]:
     """Render one page and OCR it. Returns (text, confidence in basis points).
 
@@ -436,8 +454,10 @@ def extract_pages(pdf_bytes: bytes, limits: ExtractionLimits) -> ExtractionResul
             native_error = None
 
         if not _looks_like_scan(page, native_text):
-            text, truncated = _truncate_text(native_text, limits.max_text_bytes_per_page)
-            total_text_bytes += len(text.encode("utf-8"))
+            text, truncated, text_bytes = _bounded_page_text(
+                native_text, limits, total_text_bytes
+            )
+            total_text_bytes += text_bytes
             pages.append(
                 PageExtraction(
                     page_number=number,
@@ -451,11 +471,16 @@ def extract_pages(pdf_bytes: bytes, limits: ExtractionLimits) -> ExtractionResul
         failure = _page_ocr_precheck(page, ocr_available)
         if failure is not None:
             code, detail = failure
+            text, truncated, text_bytes = _bounded_page_text(
+                native_text.strip(), limits, total_text_bytes
+            )
+            total_text_bytes += text_bytes
             pages.append(
                 PageExtraction(
                     page_number=number,
-                    text=native_text.strip(),
+                    text=text,
                     method="failed",
+                    text_truncated=truncated,
                     failure_code=code,
                     failure_detail=detail,
                 )
@@ -475,19 +500,24 @@ def extract_pages(pdf_bytes: bytes, limits: ExtractionLimits) -> ExtractionResul
                 if native_error
                 else "page_parse_error"
             )
+            text, truncated, text_bytes = _bounded_page_text(
+                native_text.strip(), limits, total_text_bytes
+            )
+            total_text_bytes += text_bytes
             pages.append(
                 PageExtraction(
                     page_number=number,
-                    text=native_text.strip(),
+                    text=text,
                     method="failed",
+                    text_truncated=truncated,
                     failure_code=code,
                     failure_detail=_safe_detail(exc),
                 )
             )
             continue
 
-        text, truncated = _truncate_text(ocr_text, limits.max_text_bytes_per_page)
-        total_text_bytes += len(text.encode("utf-8"))
+        text, truncated, text_bytes = _bounded_page_text(ocr_text, limits, total_text_bytes)
+        total_text_bytes += text_bytes
         pages.append(
             PageExtraction(
                 page_number=number,
@@ -637,6 +667,7 @@ def _parse_result_payload(raw: bytes, limits: ExtractionLimits) -> ExtractionRes
         raise ExtractionError("extraction result contained too many pages")
 
     pages: list[PageExtraction] = []
+    total_text_bytes = 0
     for index, entry in enumerate(raw_pages, start=1):
         if not isinstance(entry, dict):
             raise ExtractionError("malformed page entry in extraction result")
@@ -646,8 +677,12 @@ def _parse_result_payload(raw: bytes, limits: ExtractionLimits) -> ExtractionRes
         text = entry.get("text")
         if not isinstance(text, str):
             raise ExtractionError("malformed page text in extraction result")
-        if len(text.encode("utf-8")) > limits.max_text_bytes_per_page:
+        text_bytes = len(text.encode("utf-8"))
+        if text_bytes > limits.max_text_bytes_per_page:
             raise ExtractionError("page text exceeded the configured limit")
+        total_text_bytes += text_bytes
+        if total_text_bytes > limits.max_total_text_bytes:
+            raise ExtractionError("document text exceeded the configured limit")
         confidence = entry.get("ocrConfidenceBps")
         if confidence is not None and not (
             isinstance(confidence, int) and 0 <= confidence <= 10000
