@@ -14,20 +14,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl "${curl_args[@]}" "${base_url}/api/health" | grep -q '"status":"ok"'
+curl "${curl_args[@]}" "${base_url}/api/health" \
+  | grep '"status":"ok"' >/dev/null
 if [[ -n "$metrics_token" ]]; then
   umask 077
   metrics_header_file="$(mktemp)"
   printf 'Authorization: Bearer %s\n' "$metrics_token" > "$metrics_header_file"
   curl "${curl_args[@]}" --header "@${metrics_header_file}" "${base_url}/api/metrics" \
-    | grep -q 'atlas_argus_http_requests_total'
+    | grep 'atlas_argus_http_requests_total' >/dev/null
 else
   curl "${curl_args[@]}" "${base_url}/api/metrics" \
-    | grep -q 'atlas_argus_http_requests_total'
+    | grep 'atlas_argus_http_requests_total' >/dev/null
 fi
-curl "${curl_args[@]}" -D - -o /dev/null "${base_url}/api/health" | grep -qi 'x-content-type-options: nosniff'
-curl "${curl_args[@]}" -D - -o /dev/null "${base_url}/api/health" | grep -qi 'x-frame-options: DENY'
-curl "${curl_args[@]}" -D - -o /dev/null "${base_url}/" | grep -qi 'content-type: text/html'
+curl "${curl_args[@]}" -D - -o /dev/null "${base_url}/api/health" \
+  | grep -i 'x-content-type-options: nosniff' >/dev/null
+curl "${curl_args[@]}" -D - -o /dev/null "${base_url}/api/health" \
+  | grep -i 'x-frame-options: DENY' >/dev/null
+curl "${curl_args[@]}" -D - -o /dev/null "${base_url}/" \
+  | grep -i 'content-type: text/html' >/dev/null
 
 if [[ "${ATLAS_ARGUS_SMOKE_PACKET_FLOW:-0}" == "1" ]]; then
   ATLAS_ARGUS_SMOKE_BASE_URL="$base_url" python3 scripts/packet_flow_smoke.py
