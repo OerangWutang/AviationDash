@@ -28,7 +28,7 @@ pycparser==3.0 ; implementation_name != 'PyPy'
 pydantic==2.13.4
 pydantic-core==2.46.4
 pydyf==0.12.1
-pypdf==6.14.2
+pypdf==6.16.2
 pyphen==0.17.2
 pytesseract==0.3.13
 sqlalchemy==2.0.51
