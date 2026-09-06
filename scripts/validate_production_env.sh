@@ -87,6 +87,9 @@ require_set ATLAS_ARGUS_BACKUP_DIR
 require_set ATLAS_ARGUS_BACKUP_RETENTION_DAYS
 require_set ATLAS_ARGUS_BACKUP_DB_USER
 require_set ATLAS_ARGUS_BACKUP_OFFSITE_URI
+require_set ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED
+require_set ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR
+require_set ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE
 require_set ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES
 require_set ATLAS_ARGUS_MAX_PACKET_ENTRIES
 require_set ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES
@@ -115,6 +118,7 @@ migration_url_prefix="postgresql+psycopg://atlas_owner:${ATLAS_ARGUS_MIGRATION_D
 [[ "${ATLAS_ARGUS_BASE_URL:-}" != *replace-* ]] || fail "ATLAS_ARGUS_BASE_URL still contains placeholder text"
 [[ "${ATLAS_ARGUS_BACKUP_OFFSITE_URI:-}" != replace-* ]] || fail "ATLAS_ARGUS_BACKUP_OFFSITE_URI still contains placeholder text"
 [[ "${ATLAS_ARGUS_BACKUP_OFFSITE_URI:-}" == *:* ]] || fail "ATLAS_ARGUS_BACKUP_OFFSITE_URI should be an rclone destination such as remote:path"
+[[ "${ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED:-}" == "1" ]] || fail "ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED must be 1"
 [[ "${ATLAS_ARGUS_BACKUP_DB_USER:-}" == "atlas_owner" ]] || fail "ATLAS_ARGUS_BACKUP_DB_USER must be atlas_owner in production"
 validate_compose_secret ATLAS_ARGUS_RUNTIME_DB_PASSWORD
 validate_compose_secret ATLAS_ARGUS_MIGRATION_DB_PASSWORD
@@ -130,6 +134,20 @@ validate_bounded_integer ATLAS_ARGUS_MAX_PACKET_ENTRIES 1 1000000
 validate_bounded_integer ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES 4096 1073741824
 validate_bounded_integer ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES 4096 1073741824
 validate_bounded_integer ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES 4096 1073741824
+
+# Keep the application parser authoritative for every current and future
+# bounded setting and for cross-setting resource-envelope checks. The shell
+# checks above remain for deployment-specific credentials and clear messages.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python_bin="${ATLAS_ARGUS_PYTHON:-python3}"
+if ! config_output=$(PYTHONPATH="$repo_root/server/src" "$python_bin" -c \
+  'from atlas_argus.config import production_value_config_errors; print("\n".join(production_value_config_errors(require_migration_url=True)))' 2>&1); then
+  fail "application configuration parser failed: $config_output"
+elif [[ -n "$config_output" ]]; then
+  while IFS= read -r config_error; do
+    [[ -n "$config_error" ]] && fail "$config_error"
+  done <<< "$config_output"
+fi
 
 if (( failures > 0 )); then
   printf '%s production environment validation failure(s)\n' "$failures" >&2

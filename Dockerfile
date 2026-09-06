@@ -2,7 +2,7 @@
 # built frontend (same origin; VITE_API_URL=/).
 
 # ── Stage 1: build the frontend ────────────────────────────────────────────
-FROM node:22-alpine AS web
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS web
 WORKDIR /build
 COPY package.json package-lock.json ./
 RUN npm ci --no-fund --no-audit
@@ -16,7 +16,7 @@ ENV VITE_DEMO_LOGINS=$DEMO_LOGINS
 RUN npm run build
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
-FROM python:3.12-slim AS runtime
+FROM python:3.14.6-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
 WORKDIR /app
 RUN useradd --system --uid 999 --create-home app
 
@@ -48,7 +48,8 @@ RUN apt-get update \
 COPY server/pyproject.toml server/requirements.lock.txt ./server/
 # Install pinned, resolved dependency versions first (server/uv.lock is the
 # source of truth — regenerate both with `cd server && uv lock && uv export
-# --frozen --no-dev --no-hashes --no-emit-project -o requirements.lock.txt`),
+# --frozen --no-dev --no-hashes --no-emit-project -o requirements.lock.txt`;
+# export the CI set with `--extra dev -o requirements-dev.lock.txt`),
 # then the local package itself with --no-deps so pip can't silently
 # re-resolve a different transitive version at build time.
 RUN pip install --no-cache-dir -r server/requirements.lock.txt && rm -rf /root/.cache

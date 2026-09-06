@@ -12,6 +12,10 @@ independent legal/security approval remain required.
 - The source tree is clean. The production image is built from that reviewed
   commit/archive, not from a different or dirty directory.
 - The dependency lockfiles and migration history are included in review.
+- The npm and Python dependency audits pass. CI reports the complete production
+  image vulnerability set, blocks fixable critical findings, and publishes the
+  image's SPDX JSON SBOM. Unfixed high/critical base-image findings are reviewed
+  and dispositioned in the release record rather than being treated as absent.
 - Independent reviewers receive the final verification output and release
   identifier.
 
@@ -31,10 +35,14 @@ independent legal/security approval remain required.
   - run smoke only after the reviewed API is healthy.
 - `ATLAS_ARGUS_RELEASE_PACKAGE` is used only for validation-only rehearsals. The
   launch script refuses to validate one directory and build another.
-- Rehearsal skips are paired:
+- Rehearsal skips are paired and require `ATLAS_ARGUS_REHEARSAL=1`:
   `ATLAS_ARGUS_SKIP_IMAGE_BUILD=1`, `ATLAS_ARGUS_SKIP_DEPLOY=1`, and
-  `ATLAS_ARGUS_SKIP_SMOKE=1`. A skipped deployment cannot produce release smoke
-  evidence.
+  `ATLAS_ARGUS_SKIP_SMOKE=1`. A run containing any skip prints a non-certifying
+  rehearsal result and cannot print production success.
+- Every security, evidence, and restore sign-off record contains an exact
+  `candidate: <image-id>` line for `ATLAS_ARGUS_RELEASE_CANDIDATE_ID`.
+- The launch script records the previous API image and automatically restores
+  it if candidate health or deployed smoke fails.
 
 ## First production database only
 
@@ -109,9 +117,11 @@ independent legal/security approval remain required.
 - A non-cleared member cannot reopen an internal packet.
 - An integrity failure disables open/download/print in the UI.
 - Case integrity verification covers case audit, decisions, section revisions,
-  and packet sequence. Global account-audit verification also passes.
-- Reviewers understand that SHA-256 chains are not external signatures,
-  timestamps, or WORM storage.
+  packet sequence, extraction records, stored PDF bytes, and the latest external
+  checkpoint. Global account-audit verification also passes.
+- A fresh checkpoint is created with
+  `python -m atlas_argus.db.create_integrity_anchor`, copied to independently
+  controlled WORM storage, and then observed as `matched` by verification.
 
 ## Production configuration
 
@@ -131,6 +141,10 @@ independent legal/security approval remain required.
   approved cross-origin entry is an exact HTTPS origin.
 - `ATLAS_ARGUS_FORWARDED_ALLOW_IPS` trusts only the reverse proxy address/CIDR.
 - Request and packet artifact limits are explicitly set and match proxy limits.
+- `ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES` matches the Compose `mem_limit`; preflight
+  proves admitted ingestion children and request/render overhead fit it.
+- The integrity checkpoint key is at least 32 bytes with mode `0600`, and the
+  checkpoint directory/key are mounted read-only into the API container.
 - TLS terminates before API traffic; direct public access to the API container is
   blocked by deployment network policy.
 - `/api/metrics` rejects an unauthenticated request and is successfully scraped
@@ -189,6 +203,7 @@ Other accepted residual risks must be recorded explicitly:
 - Hash chains are unkeyed and co-located with the database.
 - Local and server modes have separate packet renderers and different approval
   semantics.
-- Server mode can switch active matters but has no normal matter-create/import
-  or search workflow after first initialization.
-- Export is HTML/browser print-to-PDF rather than a controlled PDF service.
+- Server mode supports controlled matter creation and switching, but not bulk
+  matter import or full-text matter search.
+- Production export uses the stored, server-rendered, hash-stamped PDF.
+  Browser printing remains a non-authoritative preview path.

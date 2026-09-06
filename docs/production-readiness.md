@@ -71,7 +71,7 @@ recompute unkeyed hashes.
 | Normal production bootstrap | Migrates to head, reapplies runtime grants, verifies a real matter already exists, and refuses an empty production database. The container unsets the migration URL before executing Uvicorn. |
 | Stranded-matter recovery | An owner-credentialed command readmits one active global Senior Aviation Counsel to a matter that has no active membership backed by an active account, and refuses any matter that is still reachable. It asserts schema ownership so a runtime connection cannot declare a matter stranded through its own RLS blindfold, and appends a `matter access restored` event attributed to the database operator rather than to the reviewer. See [matter access recovery](deploy/matter-access-recovery.md). |
 | Health and dependencies | `/api/health` checks PostgreSQL. Compose health conditions sequence DB, API, proxy, and monitoring startup. Backend and frontend dependencies are locked. |
-| Release provenance | Release-package validation rejects dirty tracked trees and forbidden secret/build/backup paths. `production_launch_check.sh` verifies in an isolated development project, builds the reviewed `ATLAS_ARGUS_IMAGE_TAG`, force-recreates and waits for that exact API tag, then runs smoke and operational gates. |
+| Release provenance | Release-package validation rejects dirty tracked trees and forbidden secret/build/backup paths. CI audits npm and Python locks, reports all known image vulnerabilities, blocks fixable critical image findings, and publishes an SPDX JSON SBOM. Unfixed base-image advisories remain explicit release-review inputs rather than silently passing as a clean scan. `production_launch_check.sh` verifies in an isolated development project, builds the reviewed `ATLAS_ARGUS_IMAGE_TAG`, force-recreates and waits for that exact API tag, then runs smoke and operational gates. |
 | Backups and restore | Backups are compressed, checksum-verified, mode `0600`, and emit only the dump path on stdout. Offsite copy requires an explicit encrypted-destination acknowledgement. Restore and drill are fail-fast and transactional; live restore also requires API-quiesced and restore confirmations. Production helpers select the production Compose file and refuse `docker-compose.yml`. |
 | Launch sign-offs | The launch gate requires non-empty security-review, evidence-review, and restore-drill records plus validated production environment variables. |
 
@@ -136,12 +136,13 @@ configuration. There is no production seed-password setting.
 6. **Deployment ownership remains external.** Off-host encryption/key rotation,
    legal-hold retention, job monitoring, incident response, independent review,
    and recurring restore drills must be operated and evidenced by the deployer.
-7. **General matter intake is not implemented.** Server mode lists and switches
-   active matters, but only the one-shot initializer creates the first matter;
-   there is no normal matter-create/import/search workflow.
-8. **Recovering a stranded matter is an operator act.** Membership
-   administration requires the actor's own active membership, so a matter with
-   no active membership backed by an active account has no in-app way back.
+7. **Matter intake is intentionally narrow.** An MFA-verified global Senior
+   Aviation Counsel can open a matter and becomes its initial Senior member.
+   Bulk import and full-text matter search are not implemented.
+8. **Recovering a historically stranded matter is an operator act.** Current
+   administration serializes membership changes and refuses to remove the last
+   active Senior member. A legacy or externally modified matter with no active
+   membership backed by an active account still has no in-app way back.
    Recovery runs against the migration-owner connection and is audited on the
    matter chain; see [matter access recovery](deploy/matter-access-recovery.md).
    Deliberately not an API route — the runtime role cannot even see a stranded
@@ -163,10 +164,10 @@ configuration. There is no production seed-password setting.
     as before this feature. Tightening them is a narrowly-scoped, natural
     follow-up, but it changes already-shipped behavior and deserves its own
     review rather than riding along with an ingestion migration.
-11. **Ingestion pins the deployment to one API process.** Admission control is
-    a process-local semaphore, so N workers would allow N times the configured
-    concurrent uploads and N times the memory, while still reporting the
-    configured value. The maintained production Compose file pins
+11. **Ingestion and packet rendering pin the deployment to one API process.**
+    Admission control is process-local, so N workers would multiply the
+    configured concurrent uploads and packet renders. The maintained Compose
+    file pins
     `--workers 1` and a test asserts it. Horizontal scaling requires moving
     extraction to a dedicated ingestion service or adding a cross-process
     coordinator first — it is a real architecture step, not a flag change.

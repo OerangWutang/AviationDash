@@ -1,13 +1,16 @@
-import { useStore } from "../state/store";
+import { useState } from "react";
+import { effectiveMatterRole, useStore } from "../state/store";
 import { conflictStatusLabel, formatDateTime } from "../lib/format";
 import { ClaimComparisonCard } from "./ClaimComparisonCard";
 import { ConflictStatusBadge, SeverityBadge } from "./StatusBadge";
 import { ReviewDecisionForm } from "./ReviewDecisionForm";
 import { DecisionHistory } from "./DecisionHistory";
 import { ReportImpactPreview } from "./ReportImpactPreview";
+import { OriginalEvidenceDialog } from "./OriginalEvidenceDialog";
 
 export function ConflictReviewPanel() {
   const { state, selectClaim } = useStore();
+  const [openEvidenceFor, setOpenEvidenceFor] = useState<"a" | "b" | null>(null);
   const conflict = state.conflicts.get(state.selectedConflictId);
   if (!conflict) {
     return <p className="muted empty-note">Select a conflict from the review queue.</p>;
@@ -24,6 +27,11 @@ export function ConflictReviewPanel() {
     .map((id) => state.decisions.get(id))
     .filter((d) => d !== undefined)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const matterRole = effectiveMatterRole(state);
+  const canOpenSourceA =
+    state.dataMode === "server" && sourceA.isIngested && Boolean(sourceA.contentSha256);
+  const canOpenSourceB =
+    state.dataMode === "server" && sourceB.isIngested && Boolean(sourceB.contentSha256);
 
   return (
     <div className="conflict-panel">
@@ -43,6 +51,21 @@ export function ConflictReviewPanel() {
         </p>
       </header>
 
+      <details className="review-guide panel">
+        <summary>Decision protocol for this conflict</summary>
+        <ol>
+          <li>Compare each exact quote against the original source and citation.</li>
+          <li>Separate factual disagreement from source-reliability concerns.</li>
+          <li>Preserve or escalate uncertainty rather than resolving it silently.</li>
+          <li>Record reasoning that explains the controlling evidence and report effect.</li>
+        </ol>
+        <p className="muted">
+          Current matter role: <strong>{matterRole ?? "not assigned"}</strong>.
+          {conflict.severity === "critical" &&
+            " Critical dispositive decisions require Senior Aviation Counsel."}
+        </p>
+      </details>
+
       <div className="claims-grid">
         <ClaimComparisonCard
           label="Claim A"
@@ -60,6 +83,41 @@ export function ConflictReviewPanel() {
         />
       </div>
 
+      <div className="original-evidence-actions" aria-label="Original evidence">
+        <span className="muted">Verify without leaving the review:</span>
+        <button
+          type="button"
+          className="btn-secondary compact"
+          disabled={!canOpenSourceA}
+          title={
+            canOpenSourceA
+              ? `Open ${sourceA.originalFilename}`
+              : "The original file is not stored for this legacy source."
+          }
+          onClick={() => setOpenEvidenceFor("a")}
+        >
+          Open Claim A original
+        </button>
+        <button
+          type="button"
+          className="btn-secondary compact"
+          disabled={!canOpenSourceB}
+          title={
+            canOpenSourceB
+              ? `Open ${sourceB.originalFilename}`
+              : "The original file is not stored for this legacy source."
+          }
+          onClick={() => setOpenEvidenceFor("b")}
+        >
+          Open Claim B original
+        </button>
+        {!canOpenSourceA && !canOpenSourceB && (
+          <span className="muted">
+            These legacy demo sources predate stored originals; uploaded evidence opens here.
+          </span>
+        )}
+      </div>
+
       <ReviewDecisionForm
         key={conflict.id}
         conflict={conflict}
@@ -73,6 +131,21 @@ export function ConflictReviewPanel() {
         <DecisionHistory decisions={conflictDecisions} />
         <ReportImpactPreview claims={[claimA, claimB]} />
       </div>
+
+      {openEvidenceFor === "a" && (
+        <OriginalEvidenceDialog
+          claim={claimA}
+          source={sourceA}
+          onClose={() => setOpenEvidenceFor(null)}
+        />
+      )}
+      {openEvidenceFor === "b" && (
+        <OriginalEvidenceDialog
+          claim={claimB}
+          source={sourceB}
+          onClose={() => setOpenEvidenceFor(null)}
+        />
+      )}
     </div>
   );
 }

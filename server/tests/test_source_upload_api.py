@@ -125,6 +125,57 @@ def test_pages_are_listable_with_extraction_metadata(senior):
     assert first["defaultPageRef"] == "PDF page 1"
 
 
+def test_original_pdf_is_viewable_with_integrity_headers(senior):
+    import hashlib
+
+    pdf = _native_pdf([NATIVE_BODY, SECOND_BODY])
+    source_id = _upload(senior, pdf=pdf).json()["source"]["id"]
+
+    response = senior.get(f"/api/cases/{CASE_ID}/sources/{source_id}/file")
+
+    assert response.status_code == 200, response.text
+    assert response.content == pdf
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-content-sha256"] == hashlib.sha256(pdf).hexdigest()
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert "factual-report.pdf" in response.headers["content-disposition"]
+
+
+def test_original_pdf_uses_the_source_visibility_anti_oracle(client):
+    login_as(client, "mokafor")
+    upload = _upload(client, privilegeStatus="attorney_client")
+    assert upload.status_code == 201, upload.text
+    source_id = upload.json()["source"]["id"]
+
+    login_as(client, "pnatarajan")
+    response = client.get(f"/api/cases/{CASE_ID}/sources/{source_id}/file")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Source document not found."
+
+
+def test_original_pdf_is_refused_when_stored_bytes_were_rewritten(senior):
+    from sqlalchemy import text as sql
+
+    from atlas_argus.db.session import SessionLocal
+
+    source_id, _page = _ingest_and_page(senior)
+    with SessionLocal() as session, session.begin():
+        session.execute(sql("ALTER TABLE source_document_file DISABLE TRIGGER USER"))
+        session.execute(
+            sql("UPDATE source_document_file SET content = :c WHERE source_document_id = :s"),
+            {"c": b"%PDF-1.4 substituted", "s": source_id},
+        )
+        session.execute(sql("ALTER TABLE source_document_file ENABLE TRIGGER USER"))
+
+    response = senior.get(f"/api/cases/{CASE_ID}/sources/{source_id}/file")
+
+    assert response.status_code == 403
+    assert "failed its integrity check" in response.json()["detail"]
+
+
 # ── quote verification ─────────────────────────────────────────────────────
 
 

@@ -183,10 +183,10 @@ def _scanned_with_native_header() -> bytes:
         )
     )
     scan = PdfReader(io.BytesIO(_scanned_pdf(SECOND_BODY)))
-    page = header.pages[0]
-    page.merge_page(scan.pages[0])
     writer = PdfWriter()
-    writer.add_page(page)
+    writer.add_page(header.pages[0])
+    page = writer.pages[0]
+    page.merge_page(scan.pages[0])
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()

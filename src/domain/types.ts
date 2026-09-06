@@ -208,7 +208,7 @@ export interface ReviewDecision {
   id: string;
   conflictId: string;
   decisionType: DecisionType;
-  /** For accept_* this is the accepted claim; for mark_source_unreliable, the claim whose source is discredited. */
+  /** For accept_* this is the accepted claim; for mark_source_unreliable, the claim rejected in this conflict. */
   selectedClaimId: string | null;
   reasoning: string;
   reviewerName: string;
@@ -270,6 +270,7 @@ export interface CaseFile {
   accidentDate: string;
   location: string;
   matterType: string;
-  status: string;
+  /** Empty only for the authenticated no-matter workspace. */
+  status: "open" | "";
   docketRef: string;
 }

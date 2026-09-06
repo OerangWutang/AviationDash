@@ -14,6 +14,17 @@ from atlas_argus.config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def configured_integrity_anchor(monkeypatch, tmp_path):
+    anchor_dir = tmp_path / "anchors"
+    anchor_dir.mkdir()
+    key_file = tmp_path / "anchor.key"
+    key_file.write_bytes(b"test-anchor-key-material-32-bytes-minimum")
+    key_file.chmod(0o600)
+    monkeypatch.setenv("ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR", str(anchor_dir))
+    monkeypatch.setenv("ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE", str(key_file))
+
+
 def test_dev_mode_has_no_guards(monkeypatch):
     monkeypatch.delenv("ATLAS_ARGUS_ENV", raising=False)
     assert production_config_errors() == []
@@ -126,6 +137,9 @@ def test_production_bootstrap_still_fails_closed_when_owner_sees_no_case(monkeyp
         ("ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES", "not-a-number"),
         ("ATLAS_ARGUS_MAX_PACKET_ENTRIES", "0"),
         ("ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES", str(2 * 1024 * 1024 * 1024)),
+        ("ATLAS_ARGUS_MAX_PACKET_HISTORY_ROWS", "invalid"),
+        ("ATLAS_ARGUS_REQUEST_BODY_TIMEOUT_SECONDS", "901"),
+        ("ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES", str(512 * 1024 * 1024)),
     ],
 )
 def test_production_rejects_invalid_resource_limits(monkeypatch, name, value):

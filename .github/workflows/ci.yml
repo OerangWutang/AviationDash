@@ -13,12 +13,13 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm audit --audit-level=high
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -27,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15-alpine
+        image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
         env:
           POSTGRES_USER: atlas
           POSTGRES_PASSWORD: atlas
@@ -40,10 +41,10 @@ jobs:
           --health-timeout 2s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
       # Document ingestion shells out to these. Without them the OCR tests
       # skip rather than fail, so CI would go green on a build that cannot
@@ -62,8 +63,10 @@ jobs:
           # Fonts change pagination, so record which ones the run had.
           fc-list : family | sort -u | head -20
       - run: python -m venv server/.venv
-      - run: server/.venv/bin/python -m pip install -r server/requirements.lock.txt
-      - run: server/.venv/bin/python -m pip install -e "server[dev]"
+      - run: server/.venv/bin/python -m pip install -r server/requirements-dev.lock.txt
+      - run: server/.venv/bin/python -m pip install --no-deps -e server
+      - run: server/.venv/bin/python -m pip install pip-audit==2.9.0
+      - run: server/.venv/bin/python -m pip_audit -r server/requirements-dev.lock.txt
       - run: server/.venv/bin/ruff check server/src server/tests
       - run: cd server && .venv/bin/python -m pytest -q
         env:
@@ -72,7 +75,15 @@ jobs:
       - run: bash scripts/test_ops.sh
       - run: scripts/validate_release_package.sh
       - name: Validate production environment fixture
-        run: scripts/validate_production_env.sh
+        run: |
+          anchor_tmp="$(mktemp -d)"
+          trap 'rm -rf "$anchor_tmp"' EXIT
+          mkdir "$anchor_tmp/anchors"
+          printf 'ci-integrity-anchor-key-material-at-least-32-bytes\n' > "$anchor_tmp/key"
+          chmod 600 "$anchor_tmp/key"
+          export ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR="$anchor_tmp/anchors"
+          export ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE="$anchor_tmp/key"
+          scripts/validate_production_env.sh
         env:
           ATLAS_ARGUS_ENV: production
           ATLAS_ARGUS_DATABASE_URL: postgresql+psycopg://atlas_app:generated-runtime-password@db:5432/atlas_argus
@@ -86,6 +97,7 @@ jobs:
           ATLAS_ARGUS_BACKUP_RETENTION_DAYS: "30"
           ATLAS_ARGUS_BACKUP_DB_USER: atlas_owner
           ATLAS_ARGUS_BACKUP_OFFSITE_URI: remote:atlas-argus
+          ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED: "1"
           ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES: "262144"
           ATLAS_ARGUS_MAX_PACKET_ENTRIES: "250"
           ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES: "2097152"
@@ -105,6 +117,7 @@ jobs:
           ATLAS_ARGUS_BACKUP_RETENTION_DAYS: "30"
           ATLAS_ARGUS_BACKUP_DB_USER: atlas_owner
           ATLAS_ARGUS_BACKUP_OFFSITE_URI: remote:atlas-argus
+          ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED: "1"
           ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES: "262144"
           ATLAS_ARGUS_MAX_PACKET_ENTRIES: "250"
           ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES: "2097152"
@@ -113,9 +126,15 @@ jobs:
         run: |
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
-          printf 'CI security review fixture: approved.\n' > "$tmp/security.md"
-          printf 'CI evidence review fixture: approved.\n' > "$tmp/evidence.md"
-          printf 'CI restore drill fixture: passed.\n' > "$tmp/restore.md"
+          mkdir "$tmp/anchors"
+          printf 'ci-integrity-anchor-key-material-at-least-32-bytes\n' > "$tmp/key"
+          chmod 600 "$tmp/key"
+          export ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR="$tmp/anchors"
+          export ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE="$tmp/key"
+          export ATLAS_ARGUS_RELEASE_CANDIDATE_ID=sha256:ci-fixture
+          printf 'candidate: sha256:ci-fixture\nCI security review fixture: approved.\n' > "$tmp/security.md"
+          printf 'candidate: sha256:ci-fixture\nCI evidence review fixture: approved.\n' > "$tmp/evidence.md"
+          printf 'candidate: sha256:ci-fixture\nCI restore drill fixture: passed.\n' > "$tmp/restore.md"
           export ATLAS_ARGUS_SECURITY_REVIEW_SIGNOFF="$tmp/security.md"
           export ATLAS_ARGUS_EVIDENCE_REVIEW_SIGNOFF="$tmp/evidence.md"
           export ATLAS_ARGUS_RESTORE_DRILL_RECORD="$tmp/restore.md"
@@ -124,5 +143,34 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: docker build --build-arg DEMO_LOGINS= .
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: docker build --build-arg DEMO_LOGINS= -t atlas-argus:ci .
+      - name: Report production image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: atlas-argus:ci
+          fail-build: false
+          severity-cutoff: high
+          output-format: table
+      - name: Block fixable critical image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: atlas-argus:ci
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: table
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: atlas-argus:ci
+          format: spdx-json
+          output-file: atlas-argus.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Upload image SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atlas-argus-sbom
+          path: atlas-argus.spdx.json
+          if-no-files-found: error

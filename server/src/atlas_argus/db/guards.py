@@ -166,6 +166,35 @@ CREATE TRIGGER trg_source_document_active_run_set_once
     FOR EACH ROW EXECUTE FUNCTION forbid_active_extraction_run_change();
 """
 
+SOURCE_DOCUMENT_METADATA_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_source_document_metadata_mutation() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'source_document custody metadata is immutable: DELETE rejected';
+    END IF;
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.case_id IS DISTINCT FROM OLD.case_id
+       OR NEW.title IS DISTINCT FROM OLD.title
+       OR NEW.type IS DISTINCT FROM OLD.type
+       OR NEW.origin IS DISTINCT FROM OLD.origin
+       OR NEW.custodian IS DISTINCT FROM OLD.custodian
+       OR NEW.docket_ref IS DISTINCT FROM OLD.docket_ref
+       OR NEW.ingested_at IS DISTINCT FROM OLD.ingested_at
+       OR NEW.sha256 IS DISTINCT FROM OLD.sha256
+       OR NEW.privilege_status IS DISTINCT FROM OLD.privilege_status
+       OR NEW.custody IS DISTINCT FROM OLD.custody THEN
+        RAISE EXCEPTION 'source_document custody metadata is immutable: UPDATE rejected';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_source_document_metadata_immutable ON source_document;
+CREATE TRIGGER trg_source_document_metadata_immutable
+    BEFORE UPDATE OR DELETE ON source_document
+    FOR EACH ROW EXECUTE FUNCTION forbid_source_document_metadata_mutation();
+"""
+
 #: Quote verification is a server-computed conclusion about evidence, never a
 #: client-supplied label. Any UPDATE that changes it must announce itself by
 #: setting ``atlas_argus.verification_write`` for the transaction; only the
@@ -175,7 +204,10 @@ CREATE TRIGGER trg_source_document_active_run_set_once
 CLAIM_VERIFICATION_FIELD_GUARD_SQL = """
 CREATE OR REPLACE FUNCTION forbid_unmanaged_claim_verification_write() RETURNS trigger AS $$
 BEGIN
-    IF (NEW.quote_verification IS DISTINCT FROM OLD.quote_verification
+    IF (NEW.quote IS DISTINCT FROM OLD.quote
+        OR NEW.page_ref IS DISTINCT FROM OLD.page_ref
+        OR NEW.source_document_id IS DISTINCT FROM OLD.source_document_id
+        OR NEW.quote_verification IS DISTINCT FROM OLD.quote_verification
         OR NEW.quote_verification_basis_sha256 IS DISTINCT FROM OLD.quote_verification_basis_sha256
         OR NEW.source_page_extraction_id IS DISTINCT FROM OLD.source_page_extraction_id)
        AND coalesce(current_setting('atlas_argus.verification_write', true), '') <> '1' THEN

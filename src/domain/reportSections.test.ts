@@ -52,6 +52,13 @@ describe("validateReportSection", () => {
     ).toMatch(/cite at least one claim/i);
     expect(
       validateReportSection(
+        input({ claimIds: ["clm-a4", "clm-a4"] }),
+        claimsById,
+        sample.reportSections,
+      ),
+    ).toMatch(/only once/i);
+    expect(
+      validateReportSection(
         input({ claimIds: ["clm-nope"] }),
         claimsById,
         sample.reportSections,

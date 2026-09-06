@@ -1,6 +1,13 @@
 # Replace atlas.example.com and the email address before use.
 {
   email ops@example.com
+  servers {
+    timeouts {
+      read_header 10s
+      read_body 130s
+      idle 2m
+    }
+  }
 }
 
 atlas.example.com {
@@ -10,6 +17,13 @@ atlas.example.com {
   # host (no includeSubDomains) so adopting the example cannot unexpectedly
   # affect unrelated subdomains.
   header Strict-Transport-Security "max-age=31536000"
+
+  # Defense in depth behind the application's authenticated body-buffer slots.
+  # This ceiling covers the maximum supported 100 MiB decoded upload after
+  # base64 expansion plus its JSON envelope.
+  request_body {
+    max_size 135MB
+  }
 
   reverse_proxy api:8100 {
     header_up X-Forwarded-Proto {scheme}

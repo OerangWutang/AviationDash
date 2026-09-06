@@ -14,11 +14,17 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from . import auth
-from .approval import evidence_state_sha256, revision_approval_is_current
+from .approval import (
+    evidence_state_sha256,
+    production_evidence_claim_ids,
+)
 from .config import (
+    is_production,
+    max_case_state_rows,
+    max_packet_history_rows,
     max_packet_artifact_bytes,
     max_packet_document_bytes,
     max_packet_entries,
@@ -47,11 +53,13 @@ from .integrity import (
     chain_sha256,
     extraction_manifest_sha256,
     packet_artifact_content,
+    packet_artifact_content_from_document_hash,
     packet_artifact_manifest_hash,
     report_section_revision_content,
     review_decision_content,
     revision_content_sha256,
 )
+from .integrity_anchors import verify_latest_anchor
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -91,6 +99,31 @@ def _transaction_advisory_lock(session: Session, *, chain: str, scope: str) -> N
 
 def _lock_audit_chain(session: Session, case_id: str) -> None:
     _transaction_advisory_lock(session, chain="audit_event", scope=case_id)
+
+
+def _lock_case_snapshot(session: Session, case_id: str) -> None:
+    """Share the audit lock with readers; writers take its exclusive form."""
+    session.execute(
+        text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:lock_name, 0))"),
+        {"lock_name": f"atlas_argus:audit_event:{case_id}"},
+    )
+
+
+def _acquire_render_snapshot_lock(session: Session, case_id: str) -> None:
+    """Hold a session-level shared case lock only while reading packet state."""
+    session.execute(
+        text("SELECT pg_advisory_lock_shared(hashtextextended(:lock_name, 0))"),
+        {"lock_name": f"atlas_argus:audit_event:{case_id}"},
+    )
+
+
+def _release_render_snapshot_lock(session: Session, case_id: str) -> None:
+    released = session.execute(
+        text("SELECT pg_advisory_unlock_shared(hashtextextended(:lock_name, 0))"),
+        {"lock_name": f"atlas_argus:audit_event:{case_id}"},
+    ).scalar_one()
+    if not released:
+        raise RuntimeError("Packet render snapshot lock was not held.")
 
 
 def _lock_account_audit_chain(session: Session) -> None:
@@ -210,10 +243,19 @@ def _cited_view(session: Session, claim: m.Claim) -> report_rules.CitedClaim:
 def _section_impact(
     session: Session, paragraph_ref: str, claim_ids: list[str]
 ) -> report_rules.SectionImpact:
+    evidence_claim_ids = production_evidence_claim_ids(session, claim_ids)
+    directly_cited = set(claim_ids)
     cited = [
         _cited_view(session, claim)
-        for claim_id in claim_ids
+        for claim_id in evidence_claim_ids
         if (claim := session.get(m.Claim, claim_id)) is not None
+        # A privileged disclosure counterpart is rendered as an opaque
+        # withholding notice. Its content is still approval-bound, but it does
+        # not make an otherwise public section itself privileged.
+        and (
+            claim_id in directly_cited
+            or not _is_withholding_privilege(claim.privilege_status)
+        )
     ]
     return report_rules.compute_section_impact(paragraph_ref, cited)
 
@@ -237,6 +279,21 @@ def _append_audit(
     # and must never be stamped onto case evidence.
     actor_membership = authorize_case_action(session, actor, case_id)
     _lock_audit_chain(session, case_id)
+    if subject_type in {"claim", "conflict", "source"}:
+        session.execute(
+            update(m.ReportSection)
+            .where(m.ReportSection.case_id == case_id)
+            .values(approval_current=False)
+        )
+    elif subject_type == "report_section" and action != "report section approved":
+        session.execute(
+            update(m.ReportSection)
+            .where(
+                m.ReportSection.case_id == case_id,
+                m.ReportSection.id == subject_id,
+            )
+            .values(approval_current=False)
+        )
     previous_hash = _latest_audit_hash(session, case_id)
     event = m.AuditEvent(
         id=_event_id(),
@@ -322,8 +379,10 @@ def serialize_claim(
     claim: m.Claim,
     *,
     visible_conflict_ids: set[str] | None = None,
+    related_conflict_ids: list[str] | None = None,
 ) -> dict:
-    related_conflict_ids = [c.id for c in _related_conflicts(session, claim.id)]
+    if related_conflict_ids is None:
+        related_conflict_ids = [c.id for c in _related_conflicts(session, claim.id)]
     if visible_conflict_ids is not None:
         related_conflict_ids = [
             conflict_id
@@ -350,14 +409,20 @@ def serialize_claim(
     }
 
 
-def serialize_conflict(session: Session, conflict: m.Conflict) -> dict:
-    decision_ids = list(
-        session.execute(
-            select(m.ReviewDecision.id)
-            .where(m.ReviewDecision.conflict_id == conflict.id)
-            .order_by(m.ReviewDecision.created_at, m.ReviewDecision.id)
-        ).scalars()
-    )
+def serialize_conflict(
+    session: Session,
+    conflict: m.Conflict,
+    *,
+    decision_ids: list[str] | None = None,
+) -> dict:
+    if decision_ids is None:
+        decision_ids = list(
+            session.execute(
+                select(m.ReviewDecision.id)
+                .where(m.ReviewDecision.conflict_id == conflict.id)
+                .order_by(m.ReviewDecision.created_at, m.ReviewDecision.id)
+            ).scalars()
+        )
     return {
         "id": conflict.id,
         "caseId": conflict.case_id,
@@ -476,12 +541,21 @@ def serialize_source_page(page: m.SourcePageExtraction) -> dict:
     }
 
 
-def serialize_section(session: Session, section: m.ReportSection) -> dict:
-    revision = (
-        session.get(m.ReportSectionRevision, section.active_revision_id)
-        if section.active_revision_id is not None
-        else None
-    )
+def serialize_section(
+    session: Session,
+    section: m.ReportSection,
+    *,
+    revision: m.ReportSectionRevision | None = None,
+    approval_is_current: bool | None = None,
+) -> dict:
+    if revision is None and section.active_revision_id is not None:
+        revision = session.get(m.ReportSectionRevision, section.active_revision_id)
+    if approval_is_current is None:
+        approval_is_current = (
+            section.approval_current
+            and revision is not None
+            and revision.approval_state == "approved"
+        )
     return {
         "id": section.id,
         "caseId": section.case_id,
@@ -490,7 +564,7 @@ def serialize_section(session: Session, section: m.ReportSection) -> dict:
         "text": section.text,
         "claimIds": list(section.claim_ids),
         "approvalState": (
-            "approved" if revision_approval_is_current(session, revision) else "draft"
+            "approved" if approval_is_current else "draft"
         ),
         "activeRevisionId": section.active_revision_id,
         "version": section.version,
@@ -915,14 +989,28 @@ def _verify_chain(rows: list, content_fn, chain_name: str) -> dict:
         "ok": len(issues) == 0,
         "checked": len(rows),
         "rootIntegrityHash": previous_hash,
+        # External checkpoints sign this ordered prefix. Keep the member proof
+        # separate from the public integrity fields; callers strip it before
+        # returning API responses.
+        "_anchorMembers": [
+            {"id": row.id, "integrityHash": row.integrity_hash} for row in rows
+        ],
         "issues": issues,
     }
 
 
-def _packet_artifact_issues(artifact: m.PacketArtifact) -> list[dict]:
+def _packet_artifact_issues(
+    artifact: m.PacketArtifact,
+    *,
+    verify_document: bool = True,
+    document_sha256: str | None = None,
+) -> list[dict]:
     issues: list[dict] = []
     manifest = dict(artifact.manifest)
-    document_sha256 = hashlib.sha256(artifact.document.encode("utf-8")).hexdigest()
+    if document_sha256 is None and verify_document:
+        document_sha256 = hashlib.sha256(artifact.document.encode("utf-8")).hexdigest()
+    elif document_sha256 is None:
+        document_sha256 = manifest.get("documentSha256")
     if manifest.get("bodySha256") != artifact.body_sha256:
         issues.append(
             {
@@ -982,14 +1070,66 @@ def _packet_artifact_issues(artifact: m.PacketArtifact) -> list[dict]:
     return issues
 
 
-def _verify_packet_artifact_chain(rows: list[m.PacketArtifact]) -> dict:
-    result = _verify_chain(rows, packet_artifact_content, "packet_artifact")
-    packet_issues: list[dict] = []
+def _verify_packet_artifact_chain(
+    rows: list[m.PacketArtifact],
+    *,
+    verify_documents: bool = True,
+    verify_pdf_bytes: bool = True,
+) -> dict:
+    issues: list[dict] = []
+    previous_hash: str | None = None
     for row in rows:
-        packet_issues.extend(_packet_artifact_issues(row))
-    result["issues"] = [*result["issues"], *packet_issues]
-    result["ok"] = len(result["issues"]) == 0
-    return result
+        if row.previous_integrity_hash != previous_hash:
+            issues.append(
+                {
+                    "id": row.id,
+                    "kind": "previous_hash_mismatch",
+                    "expected": previous_hash,
+                    "actual": row.previous_integrity_hash,
+                }
+            )
+        document_sha256 = (
+            hashlib.sha256(row.document.encode("utf-8")).hexdigest()
+            if verify_documents
+            else str(row.manifest.get("documentSha256", ""))
+        )
+        expected_hash = chain_sha256(
+            previous_hash=previous_hash,
+            content=packet_artifact_content_from_document_hash(row, document_sha256),
+        )
+        if row.integrity_hash != expected_hash:
+            issues.append(
+                {
+                    "id": row.id,
+                    "kind": "integrity_hash_mismatch",
+                    "expected": expected_hash,
+                    "actual": row.integrity_hash,
+                }
+            )
+        issues.extend(
+            _packet_artifact_issues(
+                row,
+                verify_document=verify_documents,
+                document_sha256=document_sha256,
+            )
+        )
+        if verify_pdf_bytes:
+            pdf_issue = _verify_stored_pdf(row)
+            if pdf_issue is not None:
+                issues.append(pdf_issue)
+        previous_hash = row.integrity_hash
+        if verify_documents and (session := object_session(row)) is not None:
+            session.expire(row, ["document"])
+    return {
+        "chain": "packet_artifact",
+        "ok": not issues,
+        "checked": len(rows),
+        "rootIntegrityHash": previous_hash,
+        "_anchorMembers": [
+            {"id": row.id, "integrityHash": row.integrity_hash} for row in rows
+        ],
+        "issues": issues,
+    }
 
 
 def _verify_section_revision_chain(rows: list[m.ReportSectionRevision]) -> dict:
@@ -1001,6 +1141,7 @@ def _verify_section_revision_chain(rows: list[m.ReportSectionRevision]) -> dict:
         by_section.setdefault(row.section_id, []).append(row)
     issues: list[dict] = []
     checked = 0
+    section_tips: list[dict] = []
     for section_rows in by_section.values():
         by_id = {row.id: row for row in section_rows}
         roots = [row for row in section_rows if row.parent_revision_id is None]
@@ -1027,6 +1168,18 @@ def _verify_section_revision_chain(rows: list[m.ReportSectionRevision]) -> dict:
                         "actual": len(child_ids),
                     }
                 )
+
+        for tip in sorted(
+            (row for row in section_rows if row.id not in children_by_parent),
+            key=lambda row: row.id,
+        ):
+            section_tips.append(
+                {
+                    "sectionId": tip.section_id,
+                    "revisionId": tip.id,
+                    "integrityHash": tip.integrity_hash,
+                }
+            )
 
         for row in section_rows:
             expected_content_hash = revision_content_sha256(
@@ -1089,48 +1242,95 @@ def _verify_section_revision_chain(rows: list[m.ReportSectionRevision]) -> dict:
         "chain": "report_section_revision",
         "ok": len(issues) == 0,
         "checked": checked,
+        "rootIntegrityHash": canonical_sha256(
+            {
+                "schema": "atlas_argus.report_revision_roots.v1",
+                "tips": sorted(
+                    section_tips,
+                    key=lambda tip: (tip["sectionId"], tip["revisionId"]),
+                ),
+            }
+        ),
+        # Revisions form one lineage per section rather than one flat case-wide
+        # chain. A checkpoint therefore proves set extension: every signed
+        # revision member must still exist with the same parent and hashes.
+        "_anchorMembers": [
+            {
+                "id": row.id,
+                "sectionId": row.section_id,
+                "parentRevisionId": row.parent_revision_id,
+                "contentSha256": row.content_sha256,
+                "integrityHash": row.integrity_hash,
+            }
+            for row in sorted(rows, key=lambda item: item.id)
+        ],
         "issues": issues,
     }
 
 
-def verify_case_integrity(
-    session: Session, reviewer: m.Reviewer, *, case_id: str | None = None
+def _bounded_history_rows(
+    session: Session,
+    statement,
+    *,
+    limit: int | None,
+    label: str,
+) -> list:
+    if limit is None:
+        return list(session.execute(statement).scalars())
+    rows = list(session.execute(statement.limit(limit + 1)).scalars())
+    if len(rows) > limit:
+        raise t.ValidationFailure(
+            f"{label} exceeds the configured {limit}-row interactive verification limit."
+        )
+    return rows
+
+
+def compute_case_integrity(
+    session: Session,
+    case_id: str,
+    *,
+    interactive: bool = True,
 ) -> dict:
-    case, _membership = _selected_case_for_reviewer(session, reviewer, case_id)
-    audit_rows = list(
-        session.execute(
-            select(m.AuditEvent)
-            .where(m.AuditEvent.case_id == case.id)
-            .order_by(m.AuditEvent.seq)
-        ).scalars()
+    """Compute matter integrity; owner jobs may opt into complete history."""
+    row_limit = max_case_state_rows() if interactive else None
+    audit_rows = _bounded_history_rows(
+        session,
+        select(m.AuditEvent)
+        .where(m.AuditEvent.case_id == case_id)
+        .order_by(m.AuditEvent.seq),
+        limit=row_limit,
+        label="Audit history",
     )
-    packet_rows = list(
-        session.execute(
-            select(m.PacketArtifact)
-            .where(m.PacketArtifact.case_id == case.id)
-            .order_by(m.PacketArtifact.seq)
-        ).scalars()
+    packet_rows = _bounded_history_rows(
+        session,
+        select(m.PacketArtifact)
+        .where(m.PacketArtifact.case_id == case_id)
+        .order_by(m.PacketArtifact.seq),
+        limit=max_packet_history_rows() if interactive else None,
+        label="Packet history",
     )
-    section_revision_rows = list(
-        session.execute(
-            select(m.ReportSectionRevision)
-            .where(m.ReportSectionRevision.case_id == case.id)
-            .order_by(m.ReportSectionRevision.section_id, m.ReportSectionRevision.created_at)
-        ).scalars()
+    section_revision_rows = _bounded_history_rows(
+        session,
+        select(m.ReportSectionRevision)
+        .where(m.ReportSectionRevision.case_id == case_id)
+        .order_by(m.ReportSectionRevision.section_id, m.ReportSectionRevision.created_at),
+        limit=row_limit,
+        label="Report revision history",
     )
-    decision_rows = list(
-        session.execute(
-            select(m.ReviewDecision)
-            .join(m.Conflict, m.Conflict.id == m.ReviewDecision.conflict_id)
-            .where(m.Conflict.case_id == case.id)
-            .order_by(m.ReviewDecision.seq)
-        ).scalars()
+    decision_rows = _bounded_history_rows(
+        session,
+        select(m.ReviewDecision)
+        .join(m.Conflict, m.Conflict.id == m.ReviewDecision.conflict_id)
+        .where(m.Conflict.case_id == case_id)
+        .order_by(m.ReviewDecision.seq),
+        limit=row_limit,
+        label="Review decision history",
     )
     audit = _verify_chain(audit_rows, audit_event_content, "audit_event")
     packets = _verify_packet_artifact_chain(packet_rows)
     sections = _verify_section_revision_chain(section_revision_rows)
     decisions = _verify_chain(decision_rows, review_decision_content, "review_decision")
-    extractions = _verify_extraction_integrity(session, case.id)
+    extractions = _verify_extraction_integrity(session, case_id, row_limit=row_limit)
     return {
         "ok": (
             audit["ok"]
@@ -1139,7 +1339,7 @@ def verify_case_integrity(
             and decisions["ok"]
             and extractions["ok"]
         ),
-        "caseId": case.id,
+        "caseId": case_id,
         "audit": audit,
         "packets": packets,
         "sections": sections,
@@ -1148,7 +1348,30 @@ def verify_case_integrity(
     }
 
 
-def _verify_extraction_integrity(session: Session, case_id: str) -> dict:
+def verify_case_integrity(
+    session: Session, reviewer: m.Reviewer, *, case_id: str | None = None
+) -> dict:
+    case, membership = _selected_case_for_reviewer(session, reviewer, case_id)
+    if not _has_privilege_clearance(membership.role):
+        raise t.PermissionDenied(
+            "Privilege clearance is required to verify the complete matter evidence set."
+        )
+    result = compute_case_integrity(session, case.id)
+    anchor = verify_latest_anchor(case.id, result)
+    for chain_name in ("audit", "packets", "sections", "decisions", "extractions"):
+        result[chain_name].pop("_anchorMembers", None)
+    result["externalAnchor"] = anchor
+    if not anchor["ok"] and (is_production() or anchor["status"] != "not_configured"):
+        result["ok"] = False
+    return result
+
+
+def _verify_extraction_integrity(
+    session: Session,
+    case_id: str,
+    *,
+    row_limit: int | None = None,
+) -> dict:
     """Recompute what ingestion recorded, from the stored bytes and text.
 
     Checked in dependency order, because a later hash is only meaningful if the
@@ -1157,24 +1380,43 @@ def _verify_extraction_integrity(session: Session, case_id: str) -> dict:
     case audit chain at ingestion, so a rewrite has to defeat this *and* the
     chain to go unnoticed.
     """
-    runs = list(
+    runs = _bounded_history_rows(
+        session,
+        select(m.SourceExtractionRun)
+        .where(m.SourceExtractionRun.case_id == case_id)
+        .order_by(m.SourceExtractionRun.id),
+        limit=row_limit,
+        label="Extraction run history",
+    )
+    run_ids = [run.id for run in runs]
+    pages = _bounded_history_rows(
+        session,
+        select(m.SourcePageExtraction)
+        .where(m.SourcePageExtraction.extraction_run_id.in_(run_ids))
+        .order_by(
+            m.SourcePageExtraction.extraction_run_id,
+            m.SourcePageExtraction.page_number,
+        ),
+        limit=row_limit,
+        label="Extraction page history",
+    )
+    pages_by_run: dict[str, list[m.SourcePageExtraction]] = {}
+    for page in pages:
+        pages_by_run.setdefault(page.extraction_run_id, []).append(page)
+    source_ids = {run.source_document_id for run in runs}
+    content_hash_by_source_id = dict(
         session.execute(
-            select(m.SourceExtractionRun)
-            .where(m.SourceExtractionRun.case_id == case_id)
-            .order_by(m.SourceExtractionRun.id)
-        ).scalars()
+            select(
+                m.SourceDocumentFile.source_document_id,
+                m.SourceDocumentFile.content_sha256,
+            ).where(m.SourceDocumentFile.source_document_id.in_(source_ids))
+        ).all()
     )
     issues: list[dict] = []
     checked_documents: set[str] = set()
 
     for run in runs:
-        pages = list(
-            session.execute(
-                select(m.SourcePageExtraction)
-                .where(m.SourcePageExtraction.extraction_run_id == run.id)
-                .order_by(m.SourcePageExtraction.page_number)
-            ).scalars()
-        )
+        run_pages = pages_by_run.get(run.id, [])
 
         if run.source_document_id not in checked_documents:
             checked_documents.add(run.source_document_id)
@@ -1202,7 +1444,7 @@ def _verify_extraction_integrity(session: Session, case_id: str) -> dict:
                     }
                 )
 
-        for page in pages:
+        for page in run_pages:
             recomputed = hashlib.sha256(page.extracted_text.encode("utf-8")).hexdigest()
             if recomputed != page.text_sha256:
                 issues.append(
@@ -1217,15 +1459,10 @@ def _verify_extraction_integrity(session: Session, case_id: str) -> dict:
                 )
 
         expected_manifest = extraction_manifest_sha256(
-            content_sha256=session.execute(
-                select(m.SourceDocumentFile.content_sha256).where(
-                    m.SourceDocumentFile.source_document_id == run.source_document_id
-                )
-            ).scalar_one_or_none()
-            or "",
+            content_sha256=content_hash_by_source_id.get(run.source_document_id, ""),
             source_document_id=run.source_document_id,
             run=run,
-            pages=pages,
+            pages=run_pages,
         )
         if expected_manifest != run.manifest_sha256:
             issues.append(
@@ -1236,7 +1473,45 @@ def _verify_extraction_integrity(session: Session, case_id: str) -> dict:
                 }
             )
 
-    return {"ok": not issues, "runs": len(runs), "issues": issues}
+    return {
+        "ok": not issues,
+        "runs": len(runs),
+        "pages": len(pages),
+        "documents": len(source_ids),
+        "rootIntegrityHash": canonical_sha256(
+            {
+                "schema": "atlas_argus.extraction_roots.v1",
+                "documents": sorted(content_hash_by_source_id.items()),
+                "runs": sorted((run.id, run.manifest_sha256) for run in runs),
+                "pages": sorted((page.id, page.text_sha256) for page in pages),
+            }
+        ),
+        "_anchorMembers": [
+            {
+                "kind": "document",
+                "id": source_id,
+                "integrityHash": content_hash,
+            }
+            for source_id, content_hash in sorted(content_hash_by_source_id.items())
+        ]
+        + [
+            {
+                "kind": "run",
+                "id": run.id,
+                "integrityHash": run.manifest_sha256,
+            }
+            for run in sorted(runs, key=lambda item: item.id)
+        ]
+        + [
+            {
+                "kind": "page",
+                "id": page.id,
+                "integrityHash": page.text_sha256,
+            }
+            for page in sorted(pages, key=lambda item: item.id)
+        ],
+        "issues": issues,
+    }
 
 
 def verify_packet_integrity(
@@ -1245,30 +1520,39 @@ def verify_packet_integrity(
     *,
     packet_id: str,
     case_id: str | None = None,
+    full_chain: bool = True,
 ) -> dict:
     artifact = session.get(m.PacketArtifact, packet_id)
     if artifact is None:
         raise t.NotFound("Packet artifact not found.")
     if case_id is not None and artifact.case_id != case_id:
         raise t.NotFound("Packet artifact not found.")
-    _case_for_reviewer(session, reviewer, artifact.case_id)
-    rows = list(
-        session.execute(
+    _case, membership = _case_for_reviewer(session, reviewer, artifact.case_id)
+    if artifact.packet_type == "internal" and not _has_privilege_clearance(membership.role):
+        raise t.PermissionDenied("Privilege clearance is required for this evidence.")
+    reveal_chain = _has_privilege_clearance(membership.role)
+    if full_chain and reveal_chain:
+        rows = _bounded_history_rows(
+            session,
             select(m.PacketArtifact)
             .where(m.PacketArtifact.case_id == artifact.case_id)
-            .order_by(m.PacketArtifact.seq)
-        ).scalars()
-    )
-    chain = _verify_packet_artifact_chain(rows)
-    packet_issues = [issue for issue in chain["issues"] if issue["id"] == packet_id]
+            .order_by(m.PacketArtifact.seq),
+            limit=max_packet_history_rows(),
+            label="Packet history",
+        )
+        chain = _verify_packet_artifact_chain(rows)
+        packet_issues = [issue for issue in chain["issues"] if issue["id"] == packet_id]
+    else:
+        chain = _verify_packet_artifact_self(artifact)
+        packet_issues = list(chain["issues"])
 
     # Recompute from the stored bytes rather than re-rendering. Re-rendering
     # would compare against whatever the currently installed WeasyPrint, font
     # and Pango versions produce today, which is not what was disclosed; the
     # question this answers is whether the artifact still is what it was.
-    pdf_issue = _verify_stored_pdf(session, artifact)
-    if pdf_issue is not None:
-        packet_issues = [*packet_issues, pdf_issue]
+    pdf_issue = next(
+        (issue for issue in packet_issues if issue.get("kind") == "packet_pdf"), None
+    )
 
     return {
         "ok": chain["ok"] and pdf_issue is None,
@@ -1280,16 +1564,55 @@ def verify_packet_integrity(
         "artifactSha256": artifact.manifest.get("artifactSha256"),
         "pdfSha256": artifact.pdf_sha256,
         "hasPdf": artifact.pdf_sha256 is not None,
-        "packetIntegrityHash": artifact.integrity_hash,
+        "packetIntegrityHash": artifact.integrity_hash if reveal_chain else None,
         "packetIssues": packet_issues,
         "chain": chain,
     }
 
 
-def _verify_stored_pdf(session: Session, artifact: m.PacketArtifact) -> dict | None:
+def _verify_packet_artifact_self(artifact: m.PacketArtifact) -> dict:
+    """Verify one authorized artifact without touching hidden chain members."""
+    document_sha256 = hashlib.sha256(artifact.document.encode("utf-8")).hexdigest()
+    issues = _packet_artifact_issues(
+        artifact,
+        verify_document=True,
+        document_sha256=document_sha256,
+    )
+    expected_hash = chain_sha256(
+        previous_hash=artifact.previous_integrity_hash,
+        content=packet_artifact_content_from_document_hash(artifact, document_sha256),
+    )
+    if artifact.integrity_hash != expected_hash:
+        issues.append(
+            {
+                "id": artifact.id,
+                "kind": "integrity_hash_mismatch",
+                "expected": expected_hash,
+                "actual": artifact.integrity_hash,
+            }
+        )
+    pdf_issue = _verify_stored_pdf(artifact)
+    if pdf_issue is not None:
+        issues.append(pdf_issue)
+    if (session := object_session(artifact)) is not None:
+        session.expire(artifact, ["document"])
+    return {
+        "chain": "packet_artifact",
+        "scope": "artifact",
+        "ok": not issues,
+        "checked": 1,
+        "rootIntegrityHash": None,
+        "issues": issues,
+    }
+
+
+def _verify_stored_pdf(artifact: m.PacketArtifact) -> dict | None:
     """Confirm the stored PDF still hashes to what was recorded."""
     if artifact.pdf_sha256 is None:
         return None
+    session = object_session(artifact)
+    if session is None:
+        raise RuntimeError("Packet PDF verification requires an attached database session.")
     stored = session.execute(
         select(m.PacketArtifact.pdf).where(m.PacketArtifact.id == artifact.id)
     ).scalar_one_or_none()
@@ -1306,14 +1629,6 @@ def _verify_stored_pdf(session: Session, artifact: m.PacketArtifact) -> dict | N
             "issue": "the stored PDF does not match its recorded hash",
         }
     return None
-
-
-def _packet_issue_ids(verification: dict) -> set[str]:
-    return {
-        issue["id"]
-        for issue in verification["issues"]
-        if isinstance(issue, dict) and isinstance(issue.get("id"), str)
-    }
 
 
 def serialize_packet_artifact_summary(
@@ -1348,7 +1663,7 @@ def serialize_packet_artifact_summary(
             if artifact.pdf_sha256 is not None
             else None
         ),
-        "packetIntegrityHash": artifact.integrity_hash,
+        "packetIntegrityHash": artifact.integrity_hash if reveal_generator else None,
         "stats": {
             "included": sum(
                 1
@@ -1380,43 +1695,37 @@ def list_packet_artifacts(
 ) -> dict:
     case, membership = _selected_case_for_reviewer(session, reviewer, case_id)
     reveal_generator = _has_privilege_clearance(membership.role)
+    visible_filter = [m.PacketArtifact.case_id == case.id]
+    if not reveal_generator:
+        visible_filter.append(m.PacketArtifact.packet_type == "production")
     total = session.execute(
-        select(func.count())
-        .select_from(m.PacketArtifact)
-        .where(m.PacketArtifact.case_id == case.id)
+        select(func.count()).select_from(m.PacketArtifact).where(*visible_filter)
     ).scalar_one()
-    all_rows = list(
-        session.execute(
-            select(m.PacketArtifact)
-            .where(m.PacketArtifact.case_id == case.id)
-            .order_by(m.PacketArtifact.seq)
-        ).scalars()
-    )
-    verification = _verify_packet_artifact_chain(all_rows)
-    issue_ids = _packet_issue_ids(verification)
     page = list(
         session.execute(
             select(m.PacketArtifact)
-            .where(m.PacketArtifact.case_id == case.id)
+            .where(*visible_filter)
             .order_by(m.PacketArtifact.seq.desc())
             .offset(offset)
             .limit(limit)
         ).scalars()
     )
+    page_verifications = {row.id: _verify_packet_artifact_self(row) for row in page}
     return {
         "caseId": case.id,
         "total": total,
         "limit": limit,
         "offset": offset,
         "verification": {
-            "ok": verification["ok"],
-            "rootIntegrityHash": verification["rootIntegrityHash"],
-            "checked": verification["checked"],
+            "ok": all(result["ok"] for result in page_verifications.values()),
+            "rootIntegrityHash": None,
+            "checked": len(page),
+            "scope": "page-artifacts",
         },
         "packets": [
             serialize_packet_artifact_summary(
                 row,
-                integrity_ok=row.id not in issue_ids,
+                integrity_ok=page_verifications[row.id]["ok"],
                 reveal_generator=reveal_generator,
             )
             for row in page
@@ -1457,7 +1766,11 @@ def get_packet_pdf(
         )
 
     verification = verify_packet_integrity(
-        session, reviewer, packet_id=artifact.id, case_id=artifact.case_id
+        session,
+        reviewer,
+        packet_id=artifact.id,
+        case_id=artifact.case_id,
+        full_chain=False,
     )
     if not verification["ok"]:
         raise t.PermissionDenied(
@@ -1495,11 +1808,13 @@ def get_packet_artifact(
     # already redacted at generation time, so any case member may fetch them.
     if artifact.packet_type == "internal" and not _has_privilege_clearance(membership.role):
         raise t.PermissionDenied("Privilege clearance is required for this evidence.")
+    reveal_chain = _has_privilege_clearance(membership.role)
     verification = verify_packet_integrity(
         session,
         reviewer,
         packet_id=artifact.id,
         case_id=artifact.case_id,
+        full_chain=False,
     )
     return {
         **serialize_packet_artifact_summary(
@@ -1507,15 +1822,31 @@ def get_packet_artifact(
             integrity_ok=verification["ok"],
             reveal_generator=_has_privilege_clearance(membership.role),
         ),
-        "manifest": artifact.manifest,
+        "manifest": (
+            artifact.manifest
+            if reveal_chain
+            else {
+                key: value
+                for key, value in artifact.manifest.items()
+                if key
+                not in {
+                    "previousPacketIntegrityHash",
+                    "auditRootBeforeGenerationSha256",
+                    "generatedByReviewerId",
+                }
+            }
+        ),
         "document": artifact.document,
         "verification": verification,
     }
 
 
 def verify_account_audit_integrity_admin(session: Session) -> dict:
-    rows = list(
-        session.execute(select(m.AccountAuditEvent).order_by(m.AccountAuditEvent.seq)).scalars()
+    rows = _bounded_history_rows(
+        session,
+        select(m.AccountAuditEvent).order_by(m.AccountAuditEvent.seq),
+        limit=max_case_state_rows(),
+        label="Account audit history",
     )
     result = _verify_chain(
         rows,
@@ -1532,36 +1863,60 @@ def get_case_state(
     session: Session, reviewer: m.Reviewer, *, case_id: str | None = None
 ) -> dict:
     case, membership = _selected_case_for_reviewer(session, reviewer, case_id)
-    reviewer_rows = session.execute(
-        select(m.Reviewer, m.CaseMember)
-        .join(m.CaseMember, m.CaseMember.reviewer_id == m.Reviewer.id)
-        .where(
-            m.CaseMember.case_id == case.id,
-            m.CaseMember.is_active.is_(True),
-        )
-        .order_by(m.Reviewer.id)
-    ).all()
-    all_sources = list(
+    _lock_case_snapshot(session, case.id)
+    row_limit = max_case_state_rows()
+
+    def bounded(rows, label: str):
+        materialized = list(rows)
+        if len(materialized) > row_limit:
+            raise t.ValidationFailure(
+                f"{label} exceeds the configured {row_limit}-row interactive "
+                "matter-state limit. Use a bounded archive or reporting endpoint."
+            )
+        return materialized
+
+    reviewer_rows = bounded(
+        session.execute(
+            select(m.Reviewer, m.CaseMember)
+            .join(m.CaseMember, m.CaseMember.reviewer_id == m.Reviewer.id)
+            .where(
+                m.CaseMember.case_id == case.id,
+                m.CaseMember.is_active.is_(True),
+            )
+            .order_by(m.Reviewer.id)
+            .limit(row_limit + 1)
+        ).all(),
+        "Active matter membership",
+    )
+    all_sources = bounded(
         session.execute(
             select(m.SourceDocument)
             .where(m.SourceDocument.case_id == case.id)
             .order_by(m.SourceDocument.id)
-        ).scalars()
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Source document count",
     )
     sources = [s for s in all_sources if _source_visible_to(membership.role, s)]
-    all_claims = list(
+    all_claims = bounded(
         session.execute(
-            select(m.Claim).where(m.Claim.case_id == case.id).order_by(m.Claim.id)
-        ).scalars()
+            select(m.Claim)
+            .where(m.Claim.case_id == case.id)
+            .order_by(m.Claim.id)
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Claim count",
     )
     claims = [c for c in all_claims if _claim_visible_to(membership.role, c)]
     visible_claim_ids = {c.id for c in claims}
-    all_conflicts = list(
+    all_conflicts = bounded(
         session.execute(
             select(m.Conflict)
             .where(m.Conflict.case_id == case.id)
             .order_by(m.Conflict.created_at, m.Conflict.id)
-        ).scalars()
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Conflict count",
     )
     conflicts = [
         c
@@ -1569,50 +1924,62 @@ def get_case_state(
         if c.claim_a_id in visible_claim_ids and c.claim_b_id in visible_claim_ids
     ]
     visible_conflict_ids = {c.id for c in conflicts}
-    claims_with_hidden_conflicts = {
-        claim.id
-        for claim in claims
-        if any(
-            conflict.id not in visible_conflict_ids
-            for conflict in all_conflicts
-            if claim.id in (conflict.claim_a_id, conflict.claim_b_id)
-        )
+    hidden_conflict_claim_ids = {
+        claim_id
+        for conflict in all_conflicts
+        if conflict.id not in visible_conflict_ids
+        for claim_id in (conflict.claim_a_id, conflict.claim_b_id)
     }
-    decisions = list(
+    claims_with_hidden_conflicts = visible_claim_ids & hidden_conflict_claim_ids
+    decisions = bounded(
         session.execute(
-            select(m.ReviewDecision).order_by(m.ReviewDecision.created_at)
-        ).scalars()
+            select(m.ReviewDecision)
+            .where(m.ReviewDecision.conflict_id.in_(visible_conflict_ids))
+            .order_by(m.ReviewDecision.created_at, m.ReviewDecision.id)
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Review decision count",
     )
-    decisions = [d for d in decisions if d.conflict_id in visible_conflict_ids]
-    audit_events = list(
+    audit_events = bounded(
         session.execute(
             select(m.AuditEvent)
             .where(m.AuditEvent.case_id == case.id)
             .order_by(m.AuditEvent.seq.desc())
-        ).scalars()
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Audit event count",
     )
     visible_source_ids = {s.id for s in sources}
     visible_section_ids: set[str] = set()
-    sections = list(
+    sections = bounded(
         session.execute(
             select(m.ReportSection)
             .where(m.ReportSection.case_id == case.id)
             .order_by(m.ReportSection.position)
-        ).scalars()
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Report section count",
     )
     sections = [
         s for s in sections if all(claim_id in visible_claim_ids for claim_id in s.claim_ids)
     ]
     visible_section_ids = {s.id for s in sections}
-    sections_with_hidden_history = {
-        section_id
-        for section_id, claim_ids in session.execute(
-            select(m.ReportSectionRevision.section_id, m.ReportSectionRevision.claim_ids).where(
+    revision_rows = bounded(
+        session.execute(
+            select(m.ReportSectionRevision)
+            .where(
                 m.ReportSectionRevision.case_id == case.id,
                 m.ReportSectionRevision.section_id.in_(visible_section_ids),
             )
-        )
-        if any(claim_id not in visible_claim_ids for claim_id in claim_ids)
+            .order_by(m.ReportSectionRevision.created_at, m.ReportSectionRevision.id)
+            .limit(row_limit + 1)
+        ).scalars(),
+        "Report revision count",
+    )
+    sections_with_hidden_history = {
+        revision.section_id
+        for revision in revision_rows
+        if any(claim_id not in visible_claim_ids for claim_id in revision.claim_ids)
     }
 
     def audit_visible(event: m.AuditEvent) -> bool:
@@ -1645,6 +2012,21 @@ def get_case_state(
 
     audit_events = [e for e in audit_events if audit_visible(e)]
 
+    related_conflict_ids_by_claim: dict[str, list[str]] = {}
+    for conflict in all_conflicts:
+        related_conflict_ids_by_claim.setdefault(conflict.claim_a_id, []).append(conflict.id)
+        related_conflict_ids_by_claim.setdefault(conflict.claim_b_id, []).append(conflict.id)
+    decision_ids_by_conflict: dict[str, list[str]] = {}
+    for decision in decisions:
+        decision_ids_by_conflict.setdefault(decision.conflict_id, []).append(decision.id)
+    revisions_by_id = {revision.id: revision for revision in revision_rows}
+    approval_by_revision_id: dict[str, bool] = {}
+    for section in sections:
+        revision = revisions_by_id.get(section.active_revision_id or "")
+        if revision is None or revision.approval_state != "approved":
+            continue
+        approval_by_revision_id[revision.id] = section.approval_current
+
     return {
         "caseFile": serialize_case_file(case),
         "caseMembership": serialize_case_member(membership),
@@ -1653,14 +2035,36 @@ def get_case_state(
         ],
         "sources": [serialize_source(s) for s in sources],
         "claims": [
-            serialize_claim(session, c, visible_conflict_ids=visible_conflict_ids)
+            serialize_claim(
+                session,
+                c,
+                visible_conflict_ids=visible_conflict_ids,
+                related_conflict_ids=related_conflict_ids_by_claim.get(c.id, []),
+            )
             for c in claims
         ],
-        "conflicts": [serialize_conflict(session, c) for c in conflicts],
+        "conflicts": [
+            serialize_conflict(
+                session,
+                c,
+                decision_ids=decision_ids_by_conflict.get(c.id, []),
+            )
+            for c in conflicts
+        ],
         "conflictOrder": [c.id for c in conflicts],
         "decisions": [serialize_decision(d) for d in decisions],
         "auditEvents": [serialize_audit_event(e) for e in audit_events],
-        "reportSections": [serialize_section(session, s) for s in sections],
+        "reportSections": [
+            serialize_section(
+                session,
+                s,
+                revision=revisions_by_id.get(s.active_revision_id or ""),
+                approval_is_current=approval_by_revision_id.get(
+                    s.active_revision_id or "", False
+                ),
+            )
+            for s in sections
+        ],
     }
 
 
@@ -1712,12 +2116,28 @@ def set_case_member_admin(
     is_active: bool = True,
 ) -> dict:
     case, _membership = _case_for_reviewer(session, actor, case_id)
+    locked_members = {
+        member.reviewer_id: member
+        for member in session.execute(
+            select(m.CaseMember)
+            .where(m.CaseMember.case_id == case_id)
+            .order_by(m.CaseMember.reviewer_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalars()
+    }
+    actor_membership = locked_members.get(actor.id)
+    if actor_membership is None or not actor_membership.is_active:
+        raise t.PermissionDenied("Reviewer is not an active member of this case.")
+    if actor.id == reviewer_id and not is_active:
+        raise t.ValidationFailure("You cannot remove your own access to this case.")
+
     reviewer = session.get(m.Reviewer, reviewer_id)
     if reviewer is None:
         raise t.NotFound("Reviewer not found.")
     if not reviewer.is_active and is_active:
         raise t.ValidationFailure("Reviewer must be active before joining a case.")
-    existing = _case_membership(session, reviewer, case_id)
+    existing = locked_members.get(reviewer.id)
     # An omitted role must never widen an established matter role. The global
     # Reviewer.role belongs to the account plane; falling back to it here would
     # silently restore full matter authority — including privilege clearance —
@@ -1726,6 +2146,34 @@ def set_case_member_admin(
     clean_role = (role or (existing.role if existing is not None else reviewer.role)).strip()
     if clean_role not in t.REVIEWER_ROLES:
         raise t.ValidationFailure(f"Unknown reviewer role: {clean_role}.")
+    if clean_role == "Senior Aviation Counsel" and reviewer.role != clean_role:
+        raise t.ValidationFailure(
+            "A matter Senior Aviation Counsel must also hold the global Senior role."
+        )
+    active_reviewer_ids = {
+        row.id
+        for row in session.execute(
+            select(m.Reviewer).where(
+                m.Reviewer.id.in_(locked_members),
+                m.Reviewer.is_active.is_(True),
+                m.Reviewer.role == "Senior Aviation Counsel",
+            )
+        ).scalars()
+    }
+    active_senior_ids = {
+        member.reviewer_id
+        for member in locked_members.values()
+        if member.is_active
+        and member.role == "Senior Aviation Counsel"
+        and member.reviewer_id in active_reviewer_ids
+    }
+    active_senior_ids.discard(reviewer.id)
+    if is_active and clean_role == "Senior Aviation Counsel":
+        active_senior_ids.add(reviewer.id)
+    if not active_senior_ids:
+        raise t.ValidationFailure(
+            "A case must retain at least one active Senior Aviation Counsel member."
+        )
     previous_status = "inactive"
     action = "case member added"
     now = _now()
@@ -1844,11 +2292,75 @@ def set_reviewer_active_admin(
     *,
     is_active: bool,
 ) -> dict:
-    reviewer = session.get(m.Reviewer, reviewer_id)
+    locked_seniors = {
+        row.id: row
+        for row in session.execute(
+            select(m.Reviewer)
+            .where(m.Reviewer.role == "Senior Aviation Counsel")
+            .order_by(m.Reviewer.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalars()
+    }
+    locked_actor = locked_seniors.get(actor.id)
+    if locked_actor is None or not locked_actor.is_active:
+        raise t.PermissionDenied("Senior Aviation Counsel account administration is required.")
+    reviewer = locked_seniors.get(reviewer_id)
+    if reviewer is None:
+        reviewer = session.execute(
+            select(m.Reviewer)
+            .where(m.Reviewer.id == reviewer_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
     if reviewer is None:
         raise t.NotFound("Reviewer not found.")
     if reviewer.id == actor.id and not is_active:
         raise t.ValidationFailure("You cannot deactivate your own account.")
+    if (
+        reviewer.role == "Senior Aviation Counsel"
+        and reviewer.is_active
+        and not is_active
+        and sum(row.is_active for row in locked_seniors.values()) <= 1
+    ):
+        raise t.ValidationFailure(
+            "At least one active Senior Aviation Counsel account must remain."
+        )
+
+    if reviewer.is_active and not is_active:
+        affected_case_ids = list(
+            session.execute(
+                select(m.CaseMember.case_id)
+                .where(
+                    m.CaseMember.reviewer_id == reviewer.id,
+                    m.CaseMember.is_active.is_(True),
+                    m.CaseMember.role == "Senior Aviation Counsel",
+                )
+                .order_by(m.CaseMember.case_id)
+            ).scalars()
+        )
+        for affected_case_id in affected_case_ids:
+            members = list(
+                session.execute(
+                    select(m.CaseMember)
+                    .where(m.CaseMember.case_id == affected_case_id)
+                    .order_by(m.CaseMember.reviewer_id)
+                    .with_for_update()
+                ).scalars()
+            )
+            has_replacement = any(
+                member.reviewer_id != reviewer.id
+                and member.is_active
+                and member.role == "Senior Aviation Counsel"
+                and (account := locked_seniors.get(member.reviewer_id)) is not None
+                and account.is_active
+                for member in members
+            )
+            if not has_replacement:
+                raise t.ValidationFailure(
+                    f"Cannot deactivate this reviewer: matter {affected_case_id} "
+                    "would have no active Senior Aviation Counsel."
+                )
 
     previous_status = "active" if reviewer.is_active else "inactive"
     new_status = "active" if is_active else "inactive"
@@ -1880,7 +2392,7 @@ def reset_reviewer_password_admin(
     *,
     new_password: str,
 ) -> dict:
-    reviewer = session.get(m.Reviewer, reviewer_id)
+    reviewer = auth.lock_reviewer_security(session, reviewer_id)
     if reviewer is None:
         raise t.NotFound("Reviewer not found.")
     _validate_admin_password(new_password)
@@ -1912,7 +2424,7 @@ def reset_reviewer_mfa_admin(
 ) -> dict:
     if actor.id == reviewer_id:
         raise t.ValidationFailure("You cannot reset your own MFA factor.")
-    reviewer = session.get(m.Reviewer, reviewer_id)
+    reviewer = auth.lock_reviewer_security(session, reviewer_id)
     if reviewer is None:
         raise t.NotFound("Reviewer not found.")
     if not auth.mfa_enabled(reviewer):
@@ -2305,6 +2817,53 @@ def list_source_pages_op(
     }
 
 
+def get_source_document_pdf(
+    session: Session,
+    reviewer: m.Reviewer,
+    *,
+    case_id: str,
+    source_id: str,
+) -> tuple[bytes, str, str]:
+    """Return an authorized source PDF only when its stored hash still verifies."""
+    from .packet_pdf import content_disposition_filename
+
+    membership = authorize_case_action(session, reviewer, case_id)
+    source = session.get(m.SourceDocument, source_id)
+    # Preserve the source anti-oracle rule used by page browsing and claim
+    # extraction: hidden privileged evidence looks exactly like a missing id.
+    if (
+        source is None
+        or source.case_id != case_id
+        or not _source_visible_to(membership.role, source)
+    ):
+        raise t.NotFound("Source document not found.")
+
+    stored = session.execute(
+        select(
+            m.SourceDocumentFile.content,
+            m.SourceDocumentFile.content_sha256,
+            m.SourceDocumentFile.original_filename,
+            m.SourceDocumentFile.mime_type,
+        ).where(
+            m.SourceDocumentFile.source_document_id == source.id,
+            m.SourceDocumentFile.case_id == case_id,
+        )
+    ).first()
+    if stored is None:
+        raise t.NotFound("The original file is not stored for this source.")
+
+    content, recorded_hash, original_filename, mime_type = stored
+    if mime_type != "application/pdf":
+        raise t.PermissionDenied("This source cannot be displayed as a PDF.")
+    raw = bytes(content)
+    if hashlib.sha256(raw).hexdigest() != recorded_hash:
+        raise t.PermissionDenied(
+            "This source failed its integrity check and cannot be displayed."
+        )
+
+    return raw, content_disposition_filename(original_filename), recorded_hash
+
+
 def _page_evidence(page: m.SourcePageExtraction | None) -> quote_rules.PageEvidence | None:
     if page is None:
         return None
@@ -2549,7 +3108,12 @@ def manually_verify_claim_quote_op(
             "Verification reasoning must be at least 20 characters."
         )
 
-    claim = session.get(m.Claim, claim_id)
+    claim = session.execute(
+        select(m.Claim)
+        .where(m.Claim.id == claim_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if claim is None or claim.case_id != case_id:
         raise t.NotFound("Claim not found.")
     if not _claim_visible_to(membership.role, claim):
@@ -2786,7 +3350,7 @@ def apply_decision_op(
         conflict.claim_a_id,
         conflict.claim_b_id,
     ):
-        raise t.ValidationFailure("The unreliable-source claim must belong to this conflict.")
+        raise t.ValidationFailure("The claim rejected as unreliable must belong to this conflict.")
 
     claim_a = session.get(m.Claim, conflict.claim_a_id)
     claim_b = session.get(m.Claim, conflict.claim_b_id)
@@ -3077,6 +3641,11 @@ def approve_section_op(
     if not allowed:
         raise t.PermissionDenied(reason or "Not permitted.")
     _check_expected_version(section.version, expected_version, "Report section")
+    # Serialize the evidence snapshot with every case mutation before computing
+    # the approval digest. Without this lock a concurrent decision can commit
+    # between the digest read and the approval audit append, making a successful
+    # approval stale before its own transaction commits.
+    _lock_audit_chain(session, section.case_id)
     impact = _section_impact(session, section.paragraph_ref, list(section.claim_ids))
     if impact.status not in {"eligible", "eligible_with_disclosure"}:
         raise t.ValidationFailure(
@@ -3085,6 +3654,7 @@ def approve_section_op(
     approval_evidence_hash = evidence_state_sha256(session, list(section.claim_ids))
     now = _now()
     section.version += 1
+    section.approval_current = True
     revision = _append_section_revision(
         session,
         section=section,
@@ -3117,6 +3687,7 @@ def generate_packet_op(
     *,
     packet_type: str,
     case_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
     """Build, redact, render, and hash-stamp an evidence packet server-side —
     the disclosure doctrine is enforced where a tampered client cannot reach
@@ -3137,27 +3708,61 @@ def generate_packet_op(
     if not allowed:
         raise t.PermissionDenied(reason or "Not permitted.")
 
-    # Every in-scope case mutation must append to this audit chain before it
-    # can commit. Holding its transaction lock across all packet reads gives
-    # build_packet one coherent committed case snapshot at READ COMMITTED;
-    # concurrent mutations either committed before this point or wait until
-    # the artifact and its generation audit event commit.
-    _lock_audit_chain(session, case.id)
-    now = _now()
-    packet = build_packet(
-        session,
-        packet_type,
-        case_id=case.id,
-        packet_id=new_packet_id(),
-        now=iso_z(now),
-        generated_by_name=reviewer.name,
-        generated_by_role=membership.role,
+    clean_idempotency_key = source_rules.validate_idempotency_key(idempotency_key)
+    idempotency_fingerprint = canonical_sha256(
+        {
+            "schema": "atlas_argus.packet_generation_fingerprint.v1",
+            "caseId": case.id,
+            "packetType": packet_type,
+        }
     )
+
+    def replay_if_present() -> dict | None:
+        if clean_idempotency_key is None:
+            return None
+        existing = session.execute(
+            select(m.PacketArtifact).where(
+                m.PacketArtifact.case_id == case.id,
+                m.PacketArtifact.idempotency_key == clean_idempotency_key,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return None
+        if existing.idempotency_fingerprint != idempotency_fingerprint:
+            raise t.DuplicateConflict(
+                "This idempotency key was already used for a different packet request."
+            )
+        return _serialize_generated_packet_replay(session, existing)
+
+    if replay := replay_if_present():
+        return replay
+
     entry_limit = max_packet_entries()
-    if len(packet.entries) > entry_limit:
-        raise t.ValidationFailure(
-            f"Packet has {len(packet.entries)} section entries; limit is {entry_limit}."
+    _acquire_render_snapshot_lock(session, case.id)
+    try:
+        entry_count = session.scalar(
+            select(func.count(m.ReportSection.id)).where(
+                m.ReportSection.case_id == case.id
+            )
         )
+        if entry_count > entry_limit:
+            raise t.ValidationFailure(
+                f"Packet has {entry_count} section entries; limit is {entry_limit}."
+            )
+        audit_root_for_snapshot = _latest_audit_hash(session, case.id)
+        now = _now()
+        packet = build_packet(
+            session,
+            packet_type,
+            case_id=case.id,
+            packet_id=new_packet_id(),
+            now=iso_z(now),
+            generated_by_name=reviewer.name,
+            generated_by_role=membership.role,
+        )
+    finally:
+        _release_render_snapshot_lock(session, case.id)
+
     body = render_packet_body(packet)
     sha256 = sha256_hex(body)
     document = render_packet_document(packet, body, sha256)
@@ -3169,15 +3774,29 @@ def generate_packet_op(
         )
     document_sha256 = sha256_hex(document)
     filename = packet_filename(packet)
+
+    # Pagination is the expensive phase. It runs without a case lock; after
+    # rendering, the audit root is rechecked under the exclusive lock so a
+    # concurrent edit causes a retry rather than a stale artifact.
+    pdf_bytes, pdf_hash = _render_packet_pdf(
+        packet, document, sha256, generated_at=now
+    )
+
+    _lock_audit_chain(session, case.id)
+    if replay := replay_if_present():
+        return replay
+    if _latest_audit_hash(session, case.id) != audit_root_for_snapshot:
+        raise t.DuplicateConflict(
+            "The matter changed while the packet was rendering. Generate it again."
+        )
     _lock_packet_artifact_chain(session, packet.case.id)
     previous_packet_hash = _latest_packet_artifact_hash(session, packet.case.id)
-    audit_root_before_generation = _latest_audit_hash(session, packet.case.id)
     manifest = {
         "packetId": packet.packet_id,
         "packetType": packet.type,
         "generatedAt": packet.generated_at,
         "generator": "atlas_argus.server.packet.v1",
-        "auditRootBeforeGenerationSha256": audit_root_before_generation,
+        "auditRootBeforeGenerationSha256": audit_root_for_snapshot,
         "bodySha256": sha256,
         "documentSha256": document_sha256,
         "previousPacketIntegrityHash": previous_packet_hash,
@@ -3230,14 +3849,6 @@ def generate_packet_op(
             f"Packet artifact is {artifact_bytes} bytes; limit is {artifact_limit}."
         )
 
-    # Rendered from the document that was just hashed, so the PDF and the HTML
-    # cannot describe different packets. Both are stored: the PDF is what gets
-    # produced to opposing counsel, and an artifact record that could not
-    # reproduce it byte-for-byte would not be much of a record.
-    pdf_bytes, pdf_hash = _render_packet_pdf(
-        packet, document, sha256, generated_at=now
-    )
-
     artifact = m.PacketArtifact(
         id=packet.packet_id,
         case_id=packet.case.id,
@@ -3252,6 +3863,10 @@ def generate_packet_op(
         manifest=manifest,
         pdf=pdf_bytes,
         pdf_sha256=pdf_hash,
+        idempotency_key=clean_idempotency_key,
+        idempotency_fingerprint=(
+            idempotency_fingerprint if clean_idempotency_key is not None else None
+        ),
         previous_integrity_hash=previous_packet_hash,
         integrity_hash="",
     )
@@ -3312,4 +3927,64 @@ def generate_packet_op(
         "filename": filename,
         "document": document,
         "auditEvent": serialize_audit_event(event),
+        "replayed": False,
+    }
+
+
+def _serialize_generated_packet_replay(
+    session: Session, artifact: m.PacketArtifact
+) -> dict:
+    manifest = dict(artifact.manifest)
+    entries = list(manifest.get("entries", []))
+    event = session.execute(
+        select(m.AuditEvent).where(
+            m.AuditEvent.case_id == artifact.case_id,
+            m.AuditEvent.subject_type == "export",
+            m.AuditEvent.subject_id == artifact.id,
+        )
+    ).scalar_one()
+    return {
+        "packetId": artifact.id,
+        "packetType": artifact.packet_type,
+        "generatedAt": iso_z(artifact.generated_at),
+        "generatedByName": artifact.generated_by_name,
+        "generatedByRole": artifact.generated_by_role,
+        "stats": {
+            disposition: sum(
+                1 for entry in entries if entry.get("disposition") == disposition
+            )
+            for disposition in ("included", "excluded", "withheld")
+        },
+        "entries": [
+            {
+                "sectionId": entry.get("sectionId"),
+                "title": entry.get("title"),
+                "paragraphRef": entry.get("paragraphRef"),
+                "impactStatus": entry.get("impactStatus"),
+                "disposition": entry.get("disposition"),
+                "reason": entry.get("reason"),
+                **(
+                    {"revisionId": entry.get("revisionId")}
+                    if "revisionId" in entry
+                    else {}
+                ),
+            }
+            for entry in entries
+        ],
+        "sha256": artifact.body_sha256,
+        "documentSha256": manifest.get("documentSha256"),
+        "manifestSha256": manifest.get("manifestSha256"),
+        "artifactSha256": manifest.get("artifactSha256"),
+        "packetIntegrityHash": artifact.integrity_hash,
+        "pdfSha256": artifact.pdf_sha256,
+        "hasPdf": artifact.pdf_sha256 is not None,
+        "pdfFilename": (
+            artifact.filename.rsplit(".", 1)[0] + ".pdf"
+            if artifact.pdf_sha256 is not None
+            else None
+        ),
+        "filename": artifact.filename,
+        "document": artifact.document,
+        "auditEvent": serialize_audit_event(event),
+        "replayed": True,
     }

@@ -48,12 +48,22 @@ are protected by append-only database controls. Integrity verification covers
 the case audit chain and its related packet, report-revision, and review-decision
 chains; a separate administrator-only check covers the account audit chain.
 
-These controls use SHA-256 hash chains stored in the same operational database.
-They detect many ordinary edits and broken relationships, but they are not
-digital signatures, trusted timestamps, external notarization, immutable object
-storage, or a WORM archive. A database owner or host administrator remains in the
-trust boundary. If independent proof is required, add externally anchored,
-signed evidence and a controlled retention system.
+These controls use SHA-256 hash chains stored in the operational database.
+Production also requires an HMAC-authenticated checkpoint directory and key
+outside the database. Run the checkpoint command after evidentiary changes and
+copy the append-only files to externally controlled WORM storage:
+
+```bash
+python -m atlas_argus.db.create_integrity_anchor
+```
+
+Matter verification compares the signed member proofs—not only row counts and
+aggregate roots—with the latest checkpoint. Ordered chains must retain the
+exact signed prefix; revision and extraction sets must retain every signed
+member unchanged. It reports rollback, mismatch, advancement, or an exact
+match. The API mounts checkpoint storage read-only. HMAC checkpoints are not
+trusted timestamps or public-key notarization; the signing key, scheduler, and
+WORM destination remain operational trust boundaries.
 
 Confirm with evidence operations and counsel:
 
@@ -61,8 +71,8 @@ Confirm with evidence operations and counsel:
   scope, including native files and physical evidence?
 - What is the authoritative evidence repository, and how are originals tied to
   Atlas Argus document references?
-- Are append-only application records sufficient for the intended use, or must
-  hashes/manifests be signed or anchored outside the application database?
+- Is the checkpoint schedule frequent enough, and are the signing key and WORM
+  destination independently controlled for the intended evidentiary use?
 - What retention, legal-hold, deletion, export, and account-deactivation rules
   apply?
 - Who investigates a failed integrity check, and what quarantine/escalation
@@ -97,8 +107,8 @@ local previews are not server artifacts and have no server provenance record.
 
 Confirm before production use:
 
-- Is HTML plus browser print-to-PDF acceptable, or is a controlled PDF renderer
-  and archival format required?
+- Does the stored, server-rendered PDF meet the required archival format, or
+  must it additionally conform to PDF/A or another filing profile?
 - Do the production document, manifest, artifact metadata, and privilege log
   expose exactly the fields approved by counsel?
 - Is server-side production sanitization sufficient for the data model in scope,

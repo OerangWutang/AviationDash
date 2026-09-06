@@ -336,9 +336,8 @@ docs/deploy/                 release, initialization, security and evidence chec
 
 - Local mode is browser-local and intentionally not an authoritative legal
   record.
-- Server mode can list and switch active matters, but there is no general
-  matter-create/import/search workflow after the one-shot first-matter
-  initializer.
+- Global Senior Aviation Counsel can create matters and bootstrap the first
+  accessible workspace. General matter import and search are not implemented.
 - Uploaded documents are stored in PostgreSQL rather than object storage, so
   every backup and replica carries the full corpus.
 - There is no in-app document or page-image viewer; manual quote attestation

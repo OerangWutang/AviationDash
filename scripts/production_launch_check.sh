@@ -9,6 +9,9 @@ source scripts/lib/production_compose.sh
 
 image_tag="${ATLAS_ARGUS_IMAGE_TAG:-atlas-argus:production}"
 verify_project=""
+rollback_needed=0
+previous_api_image=""
+rollback_tag="atlas-argus:rollback-$$"
 
 step() {
   printf '\n== %s ==\n' "$1"
@@ -28,7 +31,30 @@ cleanup_verify_stack() {
     verify_project=""
   fi
 }
-trap cleanup_verify_stack EXIT
+
+rollback_candidate() {
+  (( rollback_needed == 1 )) || return 0
+  printf '\n== rollback failed candidate ==\n' >&2
+  if [[ -n "$previous_api_image" ]]; then
+    docker image tag "$previous_api_image" "$rollback_tag"
+    ATLAS_ARGUS_IMAGE_TAG="$rollback_tag" \
+      docker compose up -d --no-build --no-deps --force-recreate --wait api
+    printf 'restored previous API image %s\n' "$previous_api_image" >&2
+  else
+    docker compose stop api
+    printf 'no previous API image existed; failed candidate was stopped\n' >&2
+  fi
+}
+
+on_exit() {
+  local status=$?
+  cleanup_verify_stack
+  if (( status != 0 && rollback_needed == 1 )); then
+    rollback_candidate || printf 'automatic API rollback failed; operator action required\n' >&2
+  fi
+  return "$status"
+}
+trap on_exit EXIT
 
 step "validate production environment"
 scripts/validate_production_env.sh
@@ -44,6 +70,22 @@ skip_image_build=0
 skip_deploy=0
 maybe_skip ATLAS_ARGUS_SKIP_IMAGE_BUILD && skip_image_build=1
 maybe_skip ATLAS_ARGUS_SKIP_DEPLOY && skip_deploy=1
+skip_requested=0
+for flag in \
+  ATLAS_ARGUS_SKIP_VERIFY \
+  ATLAS_ARGUS_SKIP_IMAGE_BUILD \
+  ATLAS_ARGUS_SKIP_DEPLOY \
+  ATLAS_ARGUS_SKIP_SMOKE \
+  ATLAS_ARGUS_SKIP_OFFSITE_BACKUP
+do
+  maybe_skip "$flag" && skip_requested=1
+done
+if (( skip_requested == 1 )) && [[ "${ATLAS_ARGUS_REHEARSAL:-0}" != "1" ]]; then
+  printf '%s\n' \
+    'Skip flags are forbidden for a production certification run.' \
+    'Set ATLAS_ARGUS_REHEARSAL=1 to run a non-certifying rehearsal.' >&2
+  exit 2
+fi
 if [[ "$skip_image_build" != "$skip_deploy" ]]; then
   printf '%s\n' \
     'ATLAS_ARGUS_SKIP_IMAGE_BUILD and ATLAS_ARGUS_SKIP_DEPLOY must be set together.' \
@@ -104,6 +146,9 @@ else
   docker build --build-arg DEMO_LOGINS= -t "$image_tag" .
 fi
 
+candidate_image_id="$(docker image inspect --format '{{.Id}}' "$image_tag")"
+export ATLAS_ARGUS_RELEASE_CANDIDATE_ID="$candidate_image_id"
+
 if (( skip_deploy == 1 )); then
   step "skip production deployment"
 else
@@ -111,8 +156,20 @@ else
   # Start the database without recreating it, then force only the API onto the
   # image tag built above. Bring up the remaining services after the API health
   # check succeeds so the following smoke test is tied to this deployment.
+  existing_api_container="$(docker compose ps -q api)"
+  if [[ -n "$existing_api_container" ]]; then
+    previous_api_image="$(docker inspect --format '{{.Image}}' "$existing_api_container")"
+  fi
+  rollback_needed=1
   docker compose up -d --no-build --wait db
   docker compose up -d --no-build --no-deps --force-recreate --wait api
+  deployed_api_container="$(docker compose ps -q api)"
+  deployed_api_image="$(docker inspect --format '{{.Image}}' "$deployed_api_container")"
+  if [[ "$deployed_api_image" != "$candidate_image_id" ]]; then
+    printf 'deployed API image %s does not match candidate %s\n' \
+      "$deployed_api_image" "$candidate_image_id" >&2
+    exit 1
+  fi
   docker compose up -d --no-build --no-deps --wait proxy prometheus
 fi
 
@@ -121,6 +178,13 @@ if maybe_skip ATLAS_ARGUS_SKIP_SMOKE; then
 else
   step "smoke deployed service"
   bash scripts/smoke.sh
+fi
+if (( skip_deploy == 0 )); then
+  step "create signed external integrity checkpoints"
+  docker compose run --rm --no-deps \
+    -e ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR=/anchor-output \
+    -v "${ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR}:/anchor-output:rw" \
+    api python -m atlas_argus.db.create_integrity_anchor
 fi
 
 step "create verified database backup"
@@ -132,17 +196,34 @@ if maybe_skip ATLAS_ARGUS_SKIP_OFFSITE_BACKUP; then
 else
   step "copy backup off-host"
   bash scripts/backup_offsite.sh "$backup"
+  step "copy integrity checkpoints to immutable off-host storage"
+  bash scripts/copy_integrity_anchors_offsite.sh
 fi
 
 step "run non-destructive restore drill"
 if [[ -n "${ATLAS_ARGUS_RESTORE_DRILL_RECORD:-}" ]]; then
   mkdir -p "$(dirname "$ATLAS_ARGUS_RESTORE_DRILL_RECORD")"
-  bash scripts/restore_drill.sh "$backup" | tee "$ATLAS_ARGUS_RESTORE_DRILL_RECORD"
+  {
+    printf 'candidate: %s\n' "$candidate_image_id"
+    bash scripts/restore_drill.sh "$backup"
+  } | tee "$ATLAS_ARGUS_RESTORE_DRILL_RECORD"
 else
   bash scripts/restore_drill.sh "$backup"
 fi
 
+if [[ "${ATLAS_ARGUS_REHEARSAL:-0}" == "1" ]]; then
+  printf '\nrehearsal complete; no production certification was issued\n'
+  exit 0
+fi
+
 step "final launch gate"
 scripts/launch_gate.sh
+
+# The candidate is certified only after backup, immutable offsite copy, restore
+# drill, and candidate-bound signoffs all succeed. Until this point any failure
+# restores the previously serving image through the EXIT trap.
+if (( skip_deploy == 0 )); then
+  rollback_needed=0
+fi
 
 printf '\nproduction launch check ok\n'

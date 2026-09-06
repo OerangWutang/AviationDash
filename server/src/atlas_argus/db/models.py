@@ -558,6 +558,13 @@ class ReportSection(Base):
     position: Mapped[int] = mapped_column(Integer)
     active_revision_id: Mapped[str | None] = mapped_column(String, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    #: Role-independent projection of whether the active approved revision is
+    #: still current. Evidence mutations invalidate it transactionally before
+    #: privilege-filtered readers observe state; counsel-only packet generation
+    #: additionally revalidates the complete evidence digest.
+    approval_current: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
 
 
 class ReportSectionRevision(Base):
@@ -615,6 +622,11 @@ class PacketArtifact(Base):
     """
 
     __tablename__ = "packet_artifact"
+    __table_args__ = (
+        UniqueConstraint(
+            "case_id", "idempotency_key", name="uq_packet_artifact_idempotency"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     #: Monotonic insert order, assigned while generate_packet_op holds the
@@ -630,7 +642,7 @@ class PacketArtifact(Base):
     generated_by_role: Mapped[str] = mapped_column(String)
     filename: Mapped[str] = mapped_column(String)
     body_sha256: Mapped[str] = mapped_column(String)
-    document: Mapped[str] = mapped_column(Text)
+    document: Mapped[str] = deferred(mapped_column(Text))
     manifest: Mapped[dict] = mapped_column(JSONB)
     #: The paginated PDF exactly as produced. Deferred so listing artifacts
     #: never drags megabytes of document per row. NULL for artifacts generated
@@ -638,6 +650,8 @@ class PacketArtifact(Base):
     #: re-rendering one now would invent a document that was never served.
     pdf: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
     pdf_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
     previous_integrity_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     integrity_hash: Mapped[str] = mapped_column(String)
 

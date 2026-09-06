@@ -5,8 +5,8 @@
     "aircraft": "Bombardier DHC-8-402 Q400 (N200WQ)",
     "accidentDate": "2009-02-12",
     "location": "Clarence Center, New York",
-    "matterType": "Accident litigation / investigation review",
-    "status": "Active — evidence review",
+    "matterType": "wrongful_death",
+    "status": "open",
     "docketRef": "NTSB DCA09MA027"
   },
   "reviewers": [

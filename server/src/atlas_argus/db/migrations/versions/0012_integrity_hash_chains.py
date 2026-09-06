@@ -5,18 +5,100 @@ Revises: 0011
 Create Date: 2026-07-12
 """
 
+from datetime import UTC
+import hashlib
+import json
 from types import SimpleNamespace
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-from atlas_argus.integrity import (
-    account_audit_event_content,
-    audit_event_content,
-    chain_sha256,
-    packet_artifact_content,
-)
+
+def _iso_z(value: Any) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def chain_sha256(*, previous_hash: str | None, content: Any) -> str:
+    return _canonical_sha256(
+        {
+            "schema": "atlas_argus.integrity_chain_link.v1",
+            "previousHash": previous_hash,
+            "content": content,
+        }
+    )
+
+
+def audit_event_content(event: Any) -> dict:
+    return {
+        "schema": "atlas_argus.audit_event.v1",
+        "id": event.id,
+        "caseId": event.case_id,
+        "at": _iso_z(event.at),
+        "actorReviewerId": event.actor_reviewer_id,
+        "actor": event.actor,
+        "actorRole": event.actor_role,
+        "action": event.action,
+        "subjectType": event.subject_type,
+        "subjectId": event.subject_id,
+        "previousStatus": event.previous_status,
+        "newStatus": event.new_status,
+        "detail": event.detail,
+        "reportEligibilityChanged": event.report_eligibility_changed,
+    }
+
+
+def account_audit_event_content(event: Any) -> dict:
+    return {
+        "schema": "atlas_argus.account_audit_event.v1",
+        "id": event.id,
+        "at": _iso_z(event.at),
+        "actorReviewerId": event.actor_reviewer_id,
+        "actor": event.actor,
+        "actorRole": event.actor_role,
+        "action": event.action,
+        "subjectReviewerId": event.subject_reviewer_id,
+        "previousStatus": event.previous_status,
+        "newStatus": event.new_status,
+        "detail": event.detail,
+    }
+
+
+def packet_artifact_content(artifact: Any) -> dict:
+    document_sha256 = hashlib.sha256(artifact.document.encode("utf-8")).hexdigest()
+    manifest = dict(artifact.manifest)
+    manifest.pop("manifestSha256", None)
+    manifest.pop("artifactSha256", None)
+    manifest_sha256 = _canonical_sha256(manifest)
+    artifact_sha256 = _canonical_sha256(
+        {
+            "schema": "atlas_argus.packet_artifact.v1",
+            "documentSha256": document_sha256,
+            "manifestSha256": manifest_sha256,
+        }
+    )
+    return {
+        "schema": "atlas_argus.packet_artifact_row.v1",
+        "id": artifact.id,
+        "caseId": artifact.case_id,
+        "packetType": artifact.packet_type,
+        "generatedAt": _iso_z(artifact.generated_at),
+        "generatedByReviewerId": artifact.generated_by_reviewer_id,
+        "generatedByName": artifact.generated_by_name,
+        "generatedByRole": artifact.generated_by_role,
+        "filename": artifact.filename,
+        "bodySha256": artifact.body_sha256,
+        "documentSha256": document_sha256,
+        "manifestSha256": manifest_sha256,
+        "artifactSha256": artifact_sha256,
+    }
 
 revision: str = "0012"
 down_revision: Union[str, None] = "0011"

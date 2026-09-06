@@ -12,7 +12,24 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from atlas_argus.db.guards import AUDIT_GUARD_SQL, ID_SEQUENCES
+# Frozen here: historical migrations must not change when runtime guard lists
+# gain new tables, functions, or sequences.
+AUDIT_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_audit_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_event is append-only: % rejected', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_audit_append_only ON audit_event;
+CREATE TRIGGER trg_audit_append_only BEFORE UPDATE OR DELETE ON audit_event
+FOR EACH ROW EXECUTE FUNCTION forbid_audit_mutation();
+"""
+ID_SEQUENCES = (
+    "claim_id_seq",
+    "conflict_id_seq",
+    "section_id_seq",
+    "source_id_seq",
+)
 
 revision: str = '0001'
 down_revision: Union[str, None] = None

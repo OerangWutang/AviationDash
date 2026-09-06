@@ -57,16 +57,156 @@ export function toSnapshot(state: SnapshotSource): CaseSnapshot {
   };
 }
 
-function hasCommonShape(snap: Record<string, unknown>): boolean {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasStrings(value: Record<string, unknown>, fields: string[]): boolean {
+  return fields.every((field) => typeof value[field] === "string");
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+
+function isClaim(value: unknown): value is Claim {
+  if (!isRecord(value)) return false;
   return (
-    Array.isArray(snap.claims) &&
-    Array.isArray(snap.conflicts) &&
-    Array.isArray(snap.conflictOrder) &&
-    Array.isArray(snap.decisions) &&
-    Array.isArray(snap.auditEvents) &&
-    typeof snap.activeReviewerId === "string" &&
-    snap.claims.length > 0 &&
-    snap.conflictOrder.length > 0
+    hasStrings(value, [
+      "id",
+      "caseId",
+      "text",
+      "sourceDocumentId",
+      "pageRef",
+      "quote",
+      "evidenceQuality",
+      "status",
+      "privilegeStatus",
+      "reportEligibility",
+      "updatedAt",
+    ]) &&
+    typeof value.confidence === "number" &&
+    Number.isFinite(value.confidence) &&
+    isNullableString(value.reviewer) &&
+    isStringArray(value.relatedConflictIds) &&
+    (value.quoteVerification === undefined ||
+      typeof value.quoteVerification === "string") &&
+    (value.sourcePageExtractionId === undefined ||
+      isNullableString(value.sourcePageExtractionId))
+  );
+}
+
+function isConflict(value: unknown): value is Conflict {
+  if (!isRecord(value)) return false;
+  return (
+    hasStrings(value, [
+      "id",
+      "caseId",
+      "claimAId",
+      "claimBId",
+      "conflictType",
+      "severity",
+      "status",
+      "summary",
+      "createdAt",
+      "claimADisposition",
+      "claimBDisposition",
+    ]) &&
+    isStringArray(value.decisionIds) &&
+    (value.version === undefined || Number.isInteger(value.version))
+  );
+}
+
+function isDecision(value: unknown): value is ReviewDecision {
+  if (!isRecord(value)) return false;
+  return (
+    hasStrings(value, [
+      "id",
+      "conflictId",
+      "decisionType",
+      "reasoning",
+      "reviewerName",
+      "reviewerRole",
+      "createdAt",
+      "previousStatus",
+      "newStatus",
+      "reportImpact",
+    ]) && isNullableString(value.selectedClaimId)
+  );
+}
+
+function isAuditEvent(value: unknown): value is AuditEvent {
+  if (!isRecord(value)) return false;
+  return (
+    hasStrings(value, [
+      "id",
+      "caseId",
+      "at",
+      "actor",
+      "actorRole",
+      "action",
+      "subjectType",
+      "subjectId",
+      "detail",
+    ]) &&
+    isNullableString(value.previousStatus) &&
+    isNullableString(value.newStatus) &&
+    typeof value.reportEligibilityChanged === "boolean"
+  );
+}
+
+function isReportSection(value: unknown): value is ReportSection {
+  if (!isRecord(value)) return false;
+  return (
+    hasStrings(value, ["id", "caseId", "title", "paragraphRef", "text"]) &&
+    isStringArray(value.claimIds) &&
+    (value.approvalState === undefined ||
+      value.approvalState === "draft" ||
+      value.approvalState === "approved") &&
+    (value.activeRevisionId === undefined || isNullableString(value.activeRevisionId)) &&
+    (value.version === undefined || Number.isInteger(value.version))
+  );
+}
+
+function uniqueIds(rows: unknown[]): boolean {
+  const ids = rows.map((row) => (isRecord(row) ? row.id : undefined));
+  return ids.every((id) => typeof id === "string") && new Set(ids).size === ids.length;
+}
+
+function hasCommonShape(snap: Record<string, unknown>): boolean {
+  if (
+    !Array.isArray(snap.claims) ||
+    !Array.isArray(snap.conflicts) ||
+    !isStringArray(snap.conflictOrder) ||
+    !Array.isArray(snap.decisions) ||
+    !Array.isArray(snap.auditEvents) ||
+    typeof snap.activeReviewerId !== "string" ||
+    snap.claims.length === 0 ||
+    snap.conflictOrder.length === 0
+  ) {
+    return false;
+  }
+  if (
+    !snap.claims.every(isClaim) ||
+    !snap.conflicts.every(isConflict) ||
+    !snap.decisions.every(isDecision) ||
+    !snap.auditEvents.every(isAuditEvent) ||
+    !uniqueIds(snap.claims) ||
+    !uniqueIds(snap.conflicts) ||
+    !uniqueIds(snap.decisions) ||
+    !uniqueIds(snap.auditEvents)
+  ) {
+    return false;
+  }
+  const conflictIds = new Set(snap.conflicts.map((conflict) => conflict.id));
+  return (
+    snap.conflictOrder.length === conflictIds.size &&
+    new Set(snap.conflictOrder).size === snap.conflictOrder.length &&
+    snap.conflictOrder.every((id) => conflictIds.has(id))
   );
 }
 
@@ -93,7 +233,14 @@ export function parseSnapshot(json: string): CaseSnapshot | null {
     } as CaseSnapshot;
   }
   if (snap.version !== SNAPSHOT_VERSION) return null;
-  if (snap.reportSections !== null && !Array.isArray(snap.reportSections)) return null;
+  if (
+    snap.reportSections !== null &&
+    (!Array.isArray(snap.reportSections) ||
+      !snap.reportSections.every(isReportSection) ||
+      !uniqueIds(snap.reportSections))
+  ) {
+    return null;
+  }
   return snap as unknown as CaseSnapshot;
 }
 
@@ -125,14 +272,14 @@ export function loadSnapshot(): CaseSnapshot | null {
   }
 }
 
-export function saveSnapshot(snapshot: CaseSnapshot): void {
+export function saveSnapshot(snapshot: CaseSnapshot): string | null {
   const store = storage();
-  if (!store) return;
+  if (!store) return "Browser storage is unavailable; this working copy is not saved.";
   try {
     store.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+    return null;
   } catch {
-    // Quota or privacy-mode failure: the app keeps working, only persistence
-    // degrades. Nothing to surface mid-workflow.
+    return "Browser storage is full or unavailable; recent work is not saved.";
   }
 }
 

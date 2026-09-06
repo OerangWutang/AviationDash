@@ -34,6 +34,12 @@ set_valid_production_env() {
   export ATLAS_ARGUS_BACKUP_RETENTION_DAYS=30
   export ATLAS_ARGUS_BACKUP_DB_USER=atlas_owner
   export ATLAS_ARGUS_BACKUP_OFFSITE_URI=remote:atlas-argus
+  export ATLAS_ARGUS_BACKUP_OFFSITE_ENCRYPTED=1
+  export ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR="$tmp/integrity-anchors"
+  export ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE="$tmp/integrity-anchor.key"
+  mkdir -p "$ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR"
+  printf 'test-integrity-anchor-key-material-32-bytes\n' > "$ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE"
+  chmod 600 "$ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE"
   export ATLAS_ARGUS_PRODUCTION_COMPOSE_FILE=docker-compose.production.example.yml
   export ATLAS_ARGUS_MAX_REQUEST_BODY_BYTES=262144
   export ATLAS_ARGUS_MAX_PACKET_ENTRIES=250
@@ -105,6 +111,15 @@ printf 'project=%s compose_file=%s image_tag=%s env=%s args=%s\n' \
   "${COMPOSE_PROJECT_NAME:-}" "${COMPOSE_FILE:-}" "${ATLAS_ARGUS_IMAGE_TAG:-}" \
   "${ATLAS_ARGUS_ENV:-}" "$*" >> "$FAKE_DOCKER_LOG"
 case " $* " in
+  *" image inspect "*)
+    printf 'sha256:candidate-test\n'
+    ;;
+  *" compose ps -q api "*)
+    printf 'fake-api-container\n'
+    ;;
+  *" inspect --format {{.Image}} "*)
+    printf 'sha256:candidate-test\n'
+    ;;
   *" pg_dump "*)
     printf 'fake postgres custom dump'
     ;;
@@ -250,6 +265,8 @@ grep -q 'compose_file=docker-compose.production.example.yml.*pg_restore' "$FAKE_
 PATH="$tmp/fake-bin:$PATH" bash scripts/restore_drill.sh "$backup_path" >/dev/null
 grep -q 'compose_file=docker-compose.production.example.yml.*createdb -U atlas_owner' "$FAKE_DOCKER_LOG" \
   || fail "production restore drill did not select the production compose file"
+grep -q 'compose_file=docker-compose.production.example.yml.*atlas_argus.db.verify_restored_database' "$FAKE_DOCKER_LOG" \
+  || fail "restore drill did not run full schema and evidence verification"
 
 export FAKE_RCLONE_LOG="$tmp/rclone.log"
 cat > "$tmp/fake-bin/rclone" <<'EOF'
@@ -303,9 +320,11 @@ printf 'restore drill passed\n' > "$restore_record"
 export ATLAS_ARGUS_SECURITY_REVIEW_SIGNOFF="$security"
 export ATLAS_ARGUS_EVIDENCE_REVIEW_SIGNOFF="$evidence"
 export ATLAS_ARGUS_RESTORE_DRILL_RECORD="$restore_record"
+export ATLAS_ARGUS_RELEASE_CANDIDATE_ID=sha256:candidate-test
 expect_failure scripts/launch_gate.sh
-printf 'security review approved\n' > "$security"
-printf 'evidence review approved\n' > "$evidence"
+printf 'candidate: sha256:candidate-test\nsecurity review approved\n' > "$security"
+printf 'candidate: sha256:candidate-test\nevidence review approved\n' > "$evidence"
+printf 'candidate: sha256:candidate-test\nrestore drill passed\n' > "$restore_record"
 scripts/launch_gate.sh >/dev/null
 
 export FAKE_VERIFY_ENV="$tmp/verify.env"
@@ -326,6 +345,7 @@ PATH="$tmp/fake-bin:$PATH" \
   ATLAS_ARGUS_SKIP_DEPLOY=1 \
   ATLAS_ARGUS_SKIP_SMOKE=1 \
   ATLAS_ARGUS_SKIP_OFFSITE_BACKUP=1 \
+  ATLAS_ARGUS_REHEARSAL=1 \
   /bin/bash scripts/production_launch_check.sh >/dev/null
 grep -q '^ATLAS_ARGUS_ENV=dev$' "$FAKE_VERIFY_ENV" || fail "verify did not force development mode"
 if grep -q '^ATLAS_ARGUS_DATABASE_URL=' "$FAKE_VERIFY_ENV"; then
@@ -359,8 +379,6 @@ chmod 700 "$tmp/fake-bin/git"
 env -u ATLAS_ARGUS_RELEASE_PACKAGE \
   PATH="$tmp/fake-bin:$PATH" \
   ATLAS_ARGUS_IMAGE_TAG=atlas-argus:reviewed-test \
-  ATLAS_ARGUS_SKIP_VERIFY=1 \
-  ATLAS_ARGUS_SKIP_OFFSITE_BACKUP=1 \
   /bin/bash scripts/production_launch_check.sh >/dev/null
 grep -q 'args=build --build-arg DEMO_LOGINS= -t atlas-argus:reviewed-test .' "$FAKE_DOCKER_LOG" \
   || fail "production launch did not build the reviewed image tag"

@@ -138,6 +138,49 @@ def test_internal_packet_view_requires_privilege_clearance(client):
     assert allowed.json()["document"] == generated["document"]
 
 
+def test_internal_packet_history_and_verification_require_privilege_clearance(client):
+    login_as(client)
+    internal = _generate(client, "internal")
+    production = _generate(client, "production")
+
+    login_as(client, "pnatarajan")
+    listing = client.get("/api/cases/case-3407/packets")
+    assert listing.status_code == 200
+    body = listing.json()
+    assert body["total"] == 1
+    assert [packet["packetId"] for packet in body["packets"]] == [production["packetId"]]
+    assert body["verification"]["scope"] == "page-artifacts"
+    assert body["verification"]["rootIntegrityHash"] is None
+    assert body["verification"]["checked"] == 1
+
+    blocked = client.get(
+        f"/api/cases/case-3407/packets/{internal['packetId']}/verify"
+    )
+    assert blocked.status_code == 403
+
+
+def test_hidden_internal_corruption_does_not_affect_production_reader(client):
+    login_as(client)
+    internal = _generate(client, "internal")
+    production = _generate(client, "production")
+    _tamper_packet(internal["packetId"])
+
+    login_as(client, "pnatarajan")
+    listing = client.get("/api/cases/case-3407/packets")
+    detail = client.get(f"/api/cases/case-3407/packets/{production['packetId']}")
+    verification = client.get(
+        f"/api/cases/case-3407/packets/{production['packetId']}/verify"
+    )
+
+    assert listing.status_code == detail.status_code == verification.status_code == 200
+    assert listing.json()["verification"]["ok"] is True
+    assert detail.json()["verification"]["ok"] is True
+    assert verification.json()["ok"] is True
+    assert verification.json()["chain"]["scope"] == "artifact"
+    serialized = json.dumps([listing.json(), detail.json(), verification.json()])
+    assert internal["packetId"] not in serialized
+
+
 def test_production_packet_view_does_not_require_privilege_clearance(client):
     login_as(client)
     generated = _generate(client, "production")
@@ -253,6 +296,9 @@ def test_noncleared_production_packet_has_no_privileged_metadata(client):
         assert payload["generatedByReviewerId"] is None
         assert payload["generatedByName"] is None
         assert payload["generatedByRole"] is None
+        assert payload["packetIntegrityHash"] is None
+    assert "previousPacketIntegrityHash" not in detail["manifest"]
+    assert "auditRootBeforeGenerationSha256" not in detail["manifest"]
 
     serialized_artifact = json.dumps(
         {"manifest": detail["manifest"], "document": detail["document"]},

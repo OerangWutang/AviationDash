@@ -19,6 +19,7 @@ export function CaseSidebar() {
   const { state, selectView, selectConflict, resetCase } = useStore();
   const [queueFilter, setQueueFilter] = useState<QueueFilter>("all");
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const { caseFile } = state;
   const conflictList = state.conflictOrder
     .map((id) => state.conflicts.get(id))
@@ -55,6 +56,23 @@ export function CaseSidebar() {
 
   return (
     <aside className="sidebar" aria-label="Case context">
+      <button
+        type="button"
+        className="sidebar-toggle"
+        aria-expanded={contextOpen}
+        aria-controls="case-context-panel"
+        onClick={() => setContextOpen((open) => !open)}
+      >
+        <span>
+          <strong>{caseFile.name}</strong>
+          <span className="mono muted"> · {unresolved} open conflicts</span>
+        </span>
+        <span aria-hidden="true">{contextOpen ? "Hide" : "Show"}</span>
+      </button>
+      <div
+        id="case-context-panel"
+        className={`sidebar-body${contextOpen ? " is-open" : ""}`}
+      >
       <section className="side-section">
         <h2 className="side-case-name">{caseFile.name}</h2>
         <p className="mono side-docket">{caseFile.docketRef}</p>
@@ -160,6 +178,11 @@ export function CaseSidebar() {
             ? "Connected to the case service — all work is recorded server-side."
             : "Working copy saved in this browser — review work survives a reload."}
         </p>
+        {state.persistenceError && (
+          <p className="form-error" role="alert">
+            {state.persistenceError}
+          </p>
+        )}
         {canResetCase && confirmingReset ? (
           <div className="reset-confirm">
             <p className="reset-warning">
@@ -198,6 +221,7 @@ export function CaseSidebar() {
           </button>
         ) : null}
       </section>
+      </div>
     </aside>
   );
 }

@@ -43,6 +43,8 @@ def validate_section(
         )
     if len(claim_ids) == 0:
         return "No report text without source references — cite at least one claim."
+    if len(set(claim_ids)) != len(claim_ids):
+        return "Each claim may be cited only once per report section."
     for claim_id in claim_ids:
         if claim_id not in known_claim_ids:
             return f"Cited claim not found: {claim_id}."

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ReportSection } from "../domain/types";
 import { computeSectionImpact } from "../domain/report";
 import {
@@ -25,6 +25,8 @@ export function SectionEditor({
   const [text, setText] = useState(existing?.text ?? "");
   const [claimIds, setClaimIds] = useState<string[]>(existing?.claimIds ?? []);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   const input = { title, paragraphRef, text, claimIds };
   const blocker = validateReportSection(
@@ -54,11 +56,19 @@ export function SectionEditor({
   };
 
   const handleSave = async () => {
-    const outcome = await saveReportSection(input, existing?.id);
-    if (outcome.ok) {
-      onClose();
-    } else {
-      setSaveError(outcome.error);
+    if (savingRef.current || blocker !== null) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const outcome = await saveReportSection(input, existing?.id);
+      if (outcome.ok) {
+        onClose();
+      } else {
+        setSaveError(outcome.error);
+      }
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -147,12 +157,12 @@ export function SectionEditor({
         <button
           type="button"
           className="btn-primary"
-          disabled={blocker !== null}
+          disabled={blocker !== null || saving}
           onClick={() => void handleSave()}
         >
-          {existing ? "Save revision" : "Save section"}
+          {saving ? "Saving…" : existing ? "Save revision" : "Save section"}
         </button>
-        <button type="button" className="btn-secondary" onClick={onClose}>
+        <button type="button" className="btn-secondary" disabled={saving} onClick={onClose}>
           Cancel
         </button>
         {blocker && <span className="save-blocker">{blocker}</span>}

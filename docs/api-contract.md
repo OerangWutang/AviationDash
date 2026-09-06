@@ -175,6 +175,7 @@ production process somehow starts without one.
 | Download packet PDF | `GET /cases/{case_id}/packets/{packet_id}/pdf` | `200` | `401`, `403`, `404` |
 | Upload source document | `POST /cases/{case_id}/sources` | `201` | `401`, `403`, `404`, `409`, `413`, `422`, `503` |
 | List extracted pages | `GET /cases/{case_id}/sources/{source_id}/pages` | `200` | `401`, `403`, `404` |
+| View original source PDF | `GET /cases/{case_id}/sources/{source_id}/file` | `200` | `401`, `403`, `404` |
 | Attest to a claim quote | `POST /cases/{case_id}/claims/{claim_id}/verify-quote` | `200` | `401`, `403`, `404`, `422` |
 
 Conflict decisions and integrity verification require MFA. Approval additionally
@@ -307,8 +308,8 @@ browser working copy.
         "aircraft": "Airbus A320-200",
         "accidentDate": "2025-04-19",
         "location": "North Sea",
-        "matterType": "Accident litigation",
-        "status": "Active — evidence intake",
+        "matterType": "wrongful_death",
+        "status": "open",
         "docketRef": "MATTER-2025-001"
       },
       "caseMembership": {
@@ -437,12 +438,17 @@ triggers reject those operations regardless of application path:
 The API verifies chained canonical SHA-256 content for case audit events,
 account audit events, review decisions, per-section revisions, and the per-case
 packet sequence. Packet verification also recomputes document/manifest/artifact
-relationships. Verification responses expose roots, counts, and issues rather
-than treating a stored boolean as proof.
+relationships and stored PDF bytes. Matter verification includes
+`externalAnchor`, whose `status` is `matched`, `advanced`, `missing`,
+`invalid`, `rollback_detected`, `checkpoint_mismatch`, or `not_configured`.
+Production requires external checkpoint configuration; missing or invalid
+checkpoints fail complete matter verification. Responses expose roots, counts,
+and issues rather than treating a stored boolean as proof.
 
-These are tamper-evident consistency checks, not signatures. A schema owner can
-rewrite data and recompute unkeyed hashes; the database is not WORM storage and
-there is no external timestamp or signing authority.
+Internal chains alone are not signatures. Scheduled HMAC-authenticated
+checkpoints bind their roots and counts outside the database and are copied to
+encrypted immutable storage. They detect database rollback, while key custody,
+checkpoint cadence, and the external store remain operational trust boundaries.
 
 ## Runtime RLS boundary
 
@@ -496,6 +502,9 @@ State-changing request bodies are capped by
 
 Packet-limit failures occur before artifact persistence or audit append. A
 reverse proxy should use an equal or lower request limit where practical.
+Packet entry count is checked before assembly. CPU-heavy PDF pagination runs
+without holding the matter mutation lock; persistence rechecks the matter audit
+root and returns `409` for a retry if evidence changed during rendering.
 
 Document upload is the one route exempt from the generic body cap, because its
 body carries a base64-encoded document. Its own limit is **derived**, not
@@ -503,6 +512,10 @@ separately configured — `ceil(4 × ATLAS_ARGUS_MAX_SOURCE_UPLOAD_BYTES / 3)`
 plus 16 KiB of JSON envelope — so a second hand-set value cannot drift from the
 first and start rejecting files that are within the configured size. A reverse
 proxy fronting `/api/cases/*/sources` must allow at least that much.
+Before reading that larger body, middleware authenticates the session, requires
+password rotation and MFA to be complete, confirms active membership in the
+target matter, and acquires a bounded body-buffer slot. Rejected callers do not
+consume the upload body.
 
 Ingestion limits:
 
@@ -516,6 +529,9 @@ Ingestion limits:
 - `ATLAS_ARGUS_SOURCE_CHILD_MEMORY_LIMIT_BYTES` (default `536870912`); and
 - `ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY` (default `70`, percent); and
 - `ATLAS_ARGUS_MAX_PACKET_PDF_BYTES` (default `20971520`).
+- `ATLAS_ARGUS_MAX_CASE_STATE_ROWS` (default `10000`, per collection);
+- `ATLAS_ARGUS_MAX_PACKET_HISTORY_ROWS` (default `1000`); and
+- `ATLAS_ARGUS_MAX_CONCURRENT_PACKET_RENDERS` (default `1`, **per process**).
 
 The per-page cap alone does not bound memory — 500 pages × 1 MiB is still half a
 gigabyte — so the total is enforced as a running budget; pages past it are

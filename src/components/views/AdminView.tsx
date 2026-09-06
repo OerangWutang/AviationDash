@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AccountAuditEvent,
   AdminCaseMember,
@@ -66,6 +66,12 @@ export function AdminView() {
   const [memberReviewerId, setMemberReviewerId] = useState("");
   const [memberRole, setMemberRole] = useState<ReviewerRole>("Claims Reviewer");
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
+  const [creating, setCreating] = useState(false);
+  const [addingMember, setAddingMember] = useState(false);
+  const creatingRef = useRef(false);
+  const addingMemberRef = useRef(false);
+  const reviewerMutationRef = useRef(false);
+  const memberMutationRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -95,7 +101,11 @@ export function AdminView() {
   }, [fetchAdminAccountAudit, fetchAdminReviewers]);
 
   useEffect(() => {
-    if (state.dataMode !== "server") return;
+    if (state.dataMode !== "server" || state.caseFile.id === "") {
+      setCaseMembers([]);
+      setMembersLoading(false);
+      return;
+    }
     let mounted = true;
     setMembersLoading(true);
     void fetchCaseMembers(state.caseFile.id).then((outcome) => {
@@ -118,119 +128,162 @@ export function AdminView() {
   };
 
   const handleCreate = async () => {
+    if (creatingRef.current || blocker !== null) return;
+    creatingRef.current = true;
+    setCreating(true);
     setError(null);
     setNotice(null);
-    const outcome = await createAdminReviewer({
-      name,
-      username,
-      role,
-      initialPassword,
-    });
-    if (!outcome.ok) {
-      setError(outcome.error);
-      return;
+    try {
+      const outcome = await createAdminReviewer({
+        name,
+        username,
+        role,
+        initialPassword,
+      });
+      if (!outcome.ok) {
+        setError(outcome.error);
+        return;
+      }
+      setReviewers((current) => upsertReviewer(current, outcome.reviewer));
+      prependAccountEvent(outcome.accountAuditEvent);
+      setName("");
+      setUsername("");
+      setRole("Claims Reviewer");
+      setInitialPassword("");
+      setNotice(`${outcome.reviewer.name} provisioned; password rotation required.`);
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
     }
-    setReviewers((current) => upsertReviewer(current, outcome.reviewer));
-    prependAccountEvent(outcome.accountAuditEvent);
-    setName("");
-    setUsername("");
-    setRole("Claims Reviewer");
-    setInitialPassword("");
-    setNotice(`${outcome.reviewer.name} provisioned; password rotation required.`);
   };
 
   const handleStatus = async (reviewer: AdminReviewer, isActive: boolean) => {
+    if (reviewerMutationRef.current) return;
+    reviewerMutationRef.current = true;
     setBusyId(reviewer.id);
     setError(null);
     setNotice(null);
-    const outcome = await setAdminReviewerActive(reviewer.id, isActive);
-    setBusyId(null);
-    if (!outcome.ok) {
-      setError(outcome.error);
-      return;
+    try {
+      const outcome = await setAdminReviewerActive(reviewer.id, isActive);
+      if (!outcome.ok) {
+        setError(outcome.error);
+        return;
+      }
+      setReviewers((current) => upsertReviewer(current, outcome.reviewer));
+      prependAccountEvent(outcome.accountAuditEvent);
+      setNotice(`${outcome.reviewer.name} marked ${isActive ? "active" : "inactive"}.`);
+    } finally {
+      reviewerMutationRef.current = false;
+      setBusyId(null);
     }
-    setReviewers((current) => upsertReviewer(current, outcome.reviewer));
-    prependAccountEvent(outcome.accountAuditEvent);
-    setNotice(`${outcome.reviewer.name} marked ${isActive ? "active" : "inactive"}.`);
   };
 
   const handleResetPassword = async (reviewer: AdminReviewer) => {
+    if (reviewerMutationRef.current) return;
+    reviewerMutationRef.current = true;
     const nextPassword = passwordDrafts[reviewer.id] ?? "";
     setBusyId(reviewer.id);
     setError(null);
     setNotice(null);
-    const outcome = await resetAdminReviewerPassword(reviewer.id, nextPassword);
-    setBusyId(null);
-    if (!outcome.ok) {
-      setError(outcome.error);
-      return;
+    try {
+      const outcome = await resetAdminReviewerPassword(reviewer.id, nextPassword);
+      if (!outcome.ok) {
+        setError(outcome.error);
+        return;
+      }
+      setReviewers((current) => upsertReviewer(current, outcome.reviewer));
+      prependAccountEvent(outcome.accountAuditEvent);
+      setPasswordDrafts((current) => ({ ...current, [reviewer.id]: "" }));
+      setNotice(`${outcome.reviewer.name} must rotate their password on next sign-in.`);
+    } finally {
+      reviewerMutationRef.current = false;
+      setBusyId(null);
     }
-    setReviewers((current) => upsertReviewer(current, outcome.reviewer));
-    prependAccountEvent(outcome.accountAuditEvent);
-    setPasswordDrafts((current) => ({ ...current, [reviewer.id]: "" }));
-    setNotice(`${outcome.reviewer.name} must rotate their password on next sign-in.`);
   };
 
   const handleResetMfa = async (reviewer: AdminReviewer) => {
+    if (reviewerMutationRef.current) return;
     const confirmed = window.confirm(
       `Reset MFA for ${reviewer.name}? Every active session will be revoked and the reviewer must enroll a new factor.`,
     );
     if (!confirmed) return;
+    reviewerMutationRef.current = true;
     setBusyId(reviewer.id);
     setError(null);
     setNotice(null);
-    const outcome = await resetAdminReviewerMfa(reviewer.id);
-    setBusyId(null);
-    if (!outcome.ok) {
-      setError(outcome.error);
-      return;
+    try {
+      const outcome = await resetAdminReviewerMfa(reviewer.id);
+      if (!outcome.ok) {
+        setError(outcome.error);
+        return;
+      }
+      setReviewers((current) => upsertReviewer(current, outcome.reviewer));
+      prependAccountEvent(outcome.accountAuditEvent);
+      setNotice(
+        `${outcome.reviewer.name}'s MFA factor was reset; sessions were revoked and re-enrollment is required.`,
+      );
+    } finally {
+      reviewerMutationRef.current = false;
+      setBusyId(null);
     }
-    setReviewers((current) => upsertReviewer(current, outcome.reviewer));
-    prependAccountEvent(outcome.accountAuditEvent);
-    setNotice(
-      `${outcome.reviewer.name}'s MFA factor was reset; sessions were revoked and re-enrollment is required.`,
-    );
   };
 
   const handleAddMember = async () => {
-    if (!memberReviewerId) return;
-    setMemberError(null);
-    setMemberNotice(null);
-    const outcome = await addCaseMember({
-      caseId: state.caseFile.id,
-      reviewerId: memberReviewerId,
-      role: memberRole,
-    });
-    if (!outcome.ok) {
-      setMemberError(outcome.error);
+    if (addingMemberRef.current || memberMutationRef.current || memberBlocker !== null) {
       return;
     }
-    setCaseMembers((current) => upsertMember(current, outcome.member));
-    prependAccountEvent(outcome.accountAuditEvent);
-    setMemberReviewerId("");
-    setMemberRole("Claims Reviewer");
-    setMemberNotice(`${outcome.member.reviewerName} granted access to this matter.`);
+    addingMemberRef.current = true;
+    memberMutationRef.current = true;
+    setAddingMember(true);
+    setMemberError(null);
+    setMemberNotice(null);
+    try {
+      const outcome = await addCaseMember({
+        caseId: state.caseFile.id,
+        reviewerId: memberReviewerId,
+        role: memberRole,
+      });
+      if (!outcome.ok) {
+        setMemberError(outcome.error);
+        return;
+      }
+      setCaseMembers((current) => upsertMember(current, outcome.member));
+      prependAccountEvent(outcome.accountAuditEvent);
+      setMemberReviewerId("");
+      setMemberRole("Claims Reviewer");
+      setMemberNotice(`${outcome.member.reviewerName} granted access to this matter.`);
+    } finally {
+      addingMemberRef.current = false;
+      memberMutationRef.current = false;
+      setAddingMember(false);
+    }
   };
 
   const handleMemberStatus = async (member: AdminCaseMember, isActive: boolean) => {
+    if (memberMutationRef.current || addingMemberRef.current) return;
+    memberMutationRef.current = true;
     setMemberBusyId(member.reviewerId);
     setMemberError(null);
     setMemberNotice(null);
-    const outcome = await setCaseMemberActive(
-      state.caseFile.id,
-      member.reviewerId,
-      isActive,
-    );
-    setMemberBusyId(null);
-    if (!outcome.ok) {
-      setMemberError(outcome.error);
-      return;
+    try {
+      const outcome = await setCaseMemberActive(
+        state.caseFile.id,
+        member.reviewerId,
+        isActive,
+      );
+      if (!outcome.ok) {
+        setMemberError(outcome.error);
+        return;
+      }
+      setCaseMembers((current) => upsertMember(current, outcome.member));
+      prependAccountEvent(outcome.accountAuditEvent);
+      setMemberNotice(
+        `${outcome.member.reviewerName} marked ${isActive ? "active" : "inactive"} for this matter.`,
+      );
+    } finally {
+      memberMutationRef.current = false;
+      setMemberBusyId(null);
     }
-    setCaseMembers((current) => upsertMember(current, outcome.member));
-    prependAccountEvent(outcome.accountAuditEvent);
-    setMemberNotice(
-      `${outcome.member.reviewerName} marked ${isActive ? "active" : "inactive"} for this matter.`,
-    );
   };
 
   const blocker =
@@ -238,8 +291,14 @@ export function AdminView() {
       ? "Name, username, and an initial password of at least 10 characters are required."
       : null;
 
+  const selectedMemberReviewer = reviewers.find((r) => r.id === memberReviewerId);
   const memberBlocker =
-    memberReviewerId === "" ? "Select a reviewer before granting matter access." : null;
+    memberReviewerId === ""
+      ? "Select a reviewer before granting matter access."
+      : memberRole === "Senior Aviation Counsel" &&
+          selectedMemberReviewer?.role !== "Senior Aviation Counsel"
+        ? "Only an account-level Senior Aviation Counsel can hold the Senior matter role."
+        : null;
 
   return (
     <div className="view-stack wide">
@@ -290,10 +349,10 @@ export function AdminView() {
           <button
             type="button"
             className="btn-primary"
-            disabled={blocker !== null}
+            disabled={blocker !== null || creating}
             onClick={() => void handleCreate()}
           >
-            Create reviewer
+            {creating ? "Creating…" : "Create reviewer"}
           </button>
           {blocker && <span className="save-blocker">{blocker}</span>}
         </div>
@@ -415,6 +474,7 @@ export function AdminView() {
         {error && <p className="form-error">{error}</p>}
       </section>
 
+      {state.caseFile.id !== "" && (
       <section className="panel" aria-label="Matter access">
         <h3 className="section-title">Matter access</h3>
         <p className="muted">
@@ -454,10 +514,10 @@ export function AdminView() {
           <button
             type="button"
             className="btn-primary"
-            disabled={memberBlocker !== null}
+            disabled={memberBlocker !== null || addingMember}
             onClick={() => void handleAddMember()}
           >
-            Grant access
+            {addingMember ? "Granting…" : "Grant access"}
           </button>
           {memberBlocker && <span className="save-blocker">{memberBlocker}</span>}
         </div>
@@ -519,6 +579,7 @@ export function AdminView() {
         )}
         {memberError && <p className="form-error">{memberError}</p>}
       </section>
+      )}
 
       <section className="panel" aria-label="Account audit">
         <h3 className="section-title">Account audit</h3>

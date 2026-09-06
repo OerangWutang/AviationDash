@@ -11,6 +11,11 @@ fail() {
 
 scripts/validate_production_env.sh || failures=$((failures + 1))
 
+candidate_id="${ATLAS_ARGUS_RELEASE_CANDIDATE_ID:-}"
+if [[ -z "$candidate_id" ]]; then
+  fail "ATLAS_ARGUS_RELEASE_CANDIDATE_ID is required"
+fi
+
 for name in \
   ATLAS_ARGUS_SECURITY_REVIEW_SIGNOFF \
   ATLAS_ARGUS_EVIDENCE_REVIEW_SIGNOFF \
@@ -24,6 +29,8 @@ do
     fail "$name does not point to a readable file: ${!name}"
   elif [[ ! -s "${!name}" ]] || ! grep -q '[^[:space:]]' "${!name}"; then
     fail "$name must point to a non-empty sign-off record: ${!name}"
+  elif [[ -n "$candidate_id" ]] && ! grep -Fqx "candidate: $candidate_id" "${!name}"; then
+    fail "$name is not bound to candidate $candidate_id"
   fi
 done
 

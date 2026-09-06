@@ -9,6 +9,8 @@ cheaper than discovering a default credential in an incident review.
 from __future__ import annotations
 
 import os
+import stat
+from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULT_DB_CREDENTIALS = "atlas:atlas@"
@@ -43,6 +45,12 @@ DEFAULT_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY = 70
 #: subsets alone are tens of kilobytes), so this is its own ceiling rather than
 #: a share of the artifact limit.
 DEFAULT_MAX_PACKET_PDF_BYTES = 20 * 1024 * 1024
+DEFAULT_MAX_CASE_STATE_ROWS = 10_000
+DEFAULT_MAX_PACKET_HISTORY_ROWS = 1_000
+DEFAULT_MAX_CONCURRENT_PACKET_RENDERS = 1
+DEFAULT_REQUEST_BODY_TIMEOUT_SECONDS = 120
+DEFAULT_API_MEMORY_LIMIT_BYTES = 1536 * 1024 * 1024
+API_BASELINE_MEMORY_RESERVE_BYTES = 256 * 1024 * 1024
 #: Headroom for the JSON envelope and metadata fields around the base64 blob.
 SOURCE_REQUEST_METADATA_OVERHEAD_BYTES = 16 * 1024
 #: A child must fit the decoded PDF, a rendered page raster, and OCR working
@@ -71,6 +79,14 @@ _BOUNDED_LIMITS = {
     ),
     "ATLAS_ARGUS_MIN_OCR_CONFIDENCE_FOR_AUTO_VERIFY": (0, 100),
     "ATLAS_ARGUS_MAX_PACKET_PDF_BYTES": (64 * 1024, 128 * 1024 * 1024),
+    "ATLAS_ARGUS_MAX_CASE_STATE_ROWS": (100, 100_000),
+    "ATLAS_ARGUS_MAX_PACKET_HISTORY_ROWS": (100, 10_000),
+    "ATLAS_ARGUS_MAX_CONCURRENT_PACKET_RENDERS": (1, 4),
+    "ATLAS_ARGUS_REQUEST_BODY_TIMEOUT_SECONDS": (5, 900),
+    "ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES": (
+        512 * 1024 * 1024,
+        16 * 1024 * 1024 * 1024,
+    ),
 }
 
 
@@ -101,6 +117,16 @@ def migration_database_url() -> str:
 
 def metrics_token() -> str:
     return os.environ.get("ATLAS_ARGUS_METRICS_TOKEN", "")
+
+
+def integrity_anchor_dir() -> Path | None:
+    raw = os.environ.get("ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR", "").strip()
+    return Path(raw) if raw else None
+
+
+def integrity_anchor_key_file() -> Path | None:
+    raw = os.environ.get("ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE", "").strip()
+    return Path(raw) if raw else None
 
 
 def max_request_body_bytes() -> int:
@@ -157,6 +183,33 @@ def max_packet_pdf_bytes() -> int:
     )
 
 
+def max_case_state_rows() -> int:
+    return _bounded_int(
+        "ATLAS_ARGUS_MAX_CASE_STATE_ROWS",
+        DEFAULT_MAX_CASE_STATE_ROWS,
+        minimum=100,
+        maximum=100_000,
+    )
+
+
+def max_packet_history_rows() -> int:
+    return _bounded_int(
+        "ATLAS_ARGUS_MAX_PACKET_HISTORY_ROWS",
+        DEFAULT_MAX_PACKET_HISTORY_ROWS,
+        minimum=100,
+        maximum=10_000,
+    )
+
+
+def max_concurrent_packet_renders() -> int:
+    return _bounded_int(
+        "ATLAS_ARGUS_MAX_CONCURRENT_PACKET_RENDERS",
+        DEFAULT_MAX_CONCURRENT_PACKET_RENDERS,
+        minimum=1,
+        maximum=4,
+    )
+
+
 def max_source_upload_bytes() -> int:
     """Decoded PDF size. The HTTP body is larger — see
     ``max_source_request_bytes``."""
@@ -205,6 +258,24 @@ def source_ingestion_timeout_seconds() -> int:
         DEFAULT_SOURCE_INGESTION_TIMEOUT_SECONDS,
         minimum=10,
         maximum=900,
+    )
+
+
+def request_body_timeout_seconds() -> int:
+    return _bounded_int(
+        "ATLAS_ARGUS_REQUEST_BODY_TIMEOUT_SECONDS",
+        DEFAULT_REQUEST_BODY_TIMEOUT_SECONDS,
+        minimum=5,
+        maximum=900,
+    )
+
+
+def api_memory_limit_bytes() -> int:
+    return _bounded_int(
+        "ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES",
+        DEFAULT_API_MEMORY_LIMIT_BYTES,
+        minimum=512 * 1024 * 1024,
+        maximum=16 * 1024 * 1024 * 1024,
     )
 
 
@@ -330,8 +401,8 @@ def _production_cors_errors() -> list[str]:
     return errors
 
 
-def production_config_errors(*, require_migration_url: bool = False) -> list[str]:
-    """Everything that must NOT reach production. Empty list = clear to boot."""
+def production_value_config_errors(*, require_migration_url: bool = False) -> list[str]:
+    """Validate production values without probing optional runtime libraries."""
     if not is_production():
         return []
     errors: list[str] = []
@@ -368,7 +439,47 @@ def production_config_errors(*, require_migration_url: bool = False) -> list[str
         if error := _configured_limit_error(name, minimum, maximum):
             errors.append(error)
     errors.extend(_ingestion_budget_errors())
-    errors.extend(_pdf_capability_errors())
+    errors.extend(_integrity_anchor_errors())
+    return errors
+
+
+def _integrity_anchor_errors() -> list[str]:
+    directory = integrity_anchor_dir()
+    key_file = integrity_anchor_key_file()
+    errors: list[str] = []
+    if directory is None:
+        errors.append("ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR is required in production.")
+    elif not directory.is_dir():
+        errors.append("ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR must be a readable directory.")
+    if key_file is None:
+        errors.append("ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE is required in production.")
+    elif not key_file.is_file():
+        errors.append("ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE must be a readable file.")
+    else:
+        try:
+            mode = stat.S_IMODE(key_file.stat().st_mode)
+            key = key_file.read_bytes().strip()
+        except OSError:
+            errors.append("ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE must be readable.")
+        else:
+            if mode & 0o077:
+                errors.append(
+                    "ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE must not be accessible "
+                    "by group or other users."
+                )
+            if len(key) < 32:
+                errors.append(
+                    "ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE must contain at least "
+                    "32 bytes of key material."
+                )
+    return errors
+
+
+def production_config_errors(*, require_migration_url: bool = False) -> list[str]:
+    """Everything that must NOT reach production. Empty list = clear to boot."""
+    errors = production_value_config_errors(require_migration_url=require_migration_url)
+    if is_production():
+        errors.extend(_pdf_capability_errors())
     return errors
 
 
@@ -406,6 +517,8 @@ def _ingestion_budget_errors() -> list[str]:
     try:
         upload = max_source_upload_bytes()
         child = source_child_memory_limit_bytes()
+        concurrency = max_concurrent_source_ingestions()
+        container = api_memory_limit_bytes()
     except RuntimeError:
         # A malformed value is already reported by the bounds check above.
         return errors
@@ -416,6 +529,19 @@ def _ingestion_budget_errors() -> list[str]:
             f"{SOURCE_CHILD_MEMORY_MULTIPLE}x ATLAS_ARGUS_MAX_SOURCE_UPLOAD_BYTES "
             f"({required} bytes) so extraction can hold the decoded document, a "
             f"rendered page, and OCR working memory; got {child}."
+        )
+    aggregate_required = (
+        child * concurrency
+        + max_source_request_bytes()
+        + max_total_extracted_text_bytes()
+        + max_packet_pdf_bytes()
+        + API_BASELINE_MEMORY_RESERVE_BYTES
+    )
+    if container < aggregate_required:
+        errors.append(
+            "ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES must cover all admitted extraction "
+            "children plus the largest request, extracted text, packet render, and "
+            f"baseline reserve ({aggregate_required} bytes required; got {container})."
         )
     return errors
 

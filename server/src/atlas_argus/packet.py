@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .approval import revision_approval_is_current
+from .approval import production_evidence_claim_ids, revision_approval_is_current
 from .db import models as m
 from .db.seed import iso_z
 from .domain.types import WITHHOLDING_PRIVILEGE
@@ -175,7 +175,16 @@ def build_packet(
         # body must be that revision's content even if the section is later
         # changed out-of-band (bug, direct SQL, partial transaction). Internal
         # work product deliberately reflects the section's current state.
-        approved = production and revision_approval_is_current(session, revision)
+        approved = (
+            production
+            and revision is not None
+            and revision.approval_state == "approved"
+            and revision.approval_evidence_sha256 is not None
+            and section.approval_current
+            # Packet generation is counsel-only, so this query sees the full
+            # evidence set and retains defense against out-of-band mutations.
+            and revision_approval_is_current(session, revision)
+        )
         source_ = revision if approved else section
         title = source_.title
         paragraph_ref = source_.paragraph_ref
@@ -214,7 +223,10 @@ def build_packet(
         disclosures: list[PacketDisclosure] = []
         if disposition == "included":
             seen: set[str] = set()
-            for claim_id in claim_ids:
+            disclosure_claim_ids = (
+                production_evidence_claim_ids(session, claim_ids) if production else claim_ids
+            )
+            for claim_id in disclosure_claim_ids:
                 claim = session.get(m.Claim, claim_id)
                 if claim is None or claim.status != "preserved":
                     continue

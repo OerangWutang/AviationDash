@@ -103,6 +103,75 @@ def test_high_risk_actions_require_verified_mfa_session(client):
     assert client.get("/api/admin/reviewers").status_code == 200
 
 
+def test_mfa_enabled_account_must_verify_before_changing_password(client):
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from atlas_argus import auth
+    from atlas_argus.db.models import Reviewer
+    from atlas_argus.db.session import SessionLocal
+
+    assert client.post(
+        "/api/auth/login", json={"username": "mokafor", "password": "argus-demo"}
+    ).status_code == 200
+    secret = auth.generate_mfa_secret()
+    with SessionLocal() as session, session.begin():
+        reviewer = session.execute(
+            select(Reviewer).where(Reviewer.username == "mokafor")
+        ).scalar_one()
+        reviewer.mfa_secret = secret
+        reviewer.mfa_enabled_at = datetime.now(UTC)
+
+    blocked = client.post(
+        "/api/auth/change-password",
+        json={"currentPassword": "argus-demo", "newPassword": "rotated-password-123"},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"] == auth.MFA_REQUIRED
+
+    code = auth._totp_at(secret, int(auth.time.time()))
+    assert client.post("/api/auth/mfa/verify", json={"code": code}).status_code == 200
+    changed = client.post(
+        "/api/auth/change-password",
+        json={"currentPassword": "argus-demo", "newPassword": "rotated-password-123"},
+    )
+    assert changed.status_code == 200
+
+
+def test_totp_counter_is_consumed_once_across_sessions(client):
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from atlas_argus import auth
+    from atlas_argus.db.models import Reviewer
+    from atlas_argus.db.session import SessionLocal
+
+    secret = auth.generate_mfa_secret()
+    with SessionLocal() as session, session.begin():
+        reviewer = session.execute(
+            select(Reviewer).where(Reviewer.username == "mokafor")
+        ).scalar_one()
+        reviewer.mfa_secret = secret
+        reviewer.mfa_enabled_at = datetime.now(UTC)
+
+    first = client.post(
+        "/api/auth/login", json={"username": "mokafor", "password": "argus-demo"}
+    )
+    assert first.status_code == 200
+    code = auth._totp_at(secret, int(auth.time.time()))
+    assert client.post("/api/auth/mfa/verify", json={"code": code}).status_code == 200
+
+    # Re-login replaces the browser cookie with a distinct pending session.
+    assert client.post(
+        "/api/auth/login", json={"username": "mokafor", "password": "argus-demo"}
+    ).status_code == 200
+    replay = client.post("/api/auth/mfa/verify", json={"code": code})
+    assert replay.status_code == 422
+    assert replay.json()["detail"] == auth.MFA_INVALID
+
+
 def test_enabled_mfa_cannot_be_replaced_by_password_only_session(client):
     from datetime import UTC, datetime
 
@@ -296,6 +365,7 @@ def test_security_headers_are_set(client):
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert "frame-src 'self' blob:" in response.headers["content-security-policy"]
     assert (
         f"style-src 'self' '{PACKET_STYLE_CSP_HASH}'"
         in response.headers["content-security-policy"]
@@ -541,7 +611,7 @@ def test_stale_login_throttle_rows_for_unknown_usernames_are_swept(client, monke
         client.post("/api/auth/login", json={"username": f"ghost-{i}", "password": "whatever"})
     with SessionLocal() as s:
         count = s.execute(select(func.count()).select_from(LoginThrottle)).scalar_one()
-    assert count == 6  # five username rows plus the fixed aggregate-admission row
+    assert count == 6  # five username rows plus this client's source bucket
 
     # Once those rows are unlocked and quiet past the sweep window, the next
     # login attempt reclaims them instead of growing the table forever.
@@ -550,18 +620,20 @@ def test_stale_login_throttle_rows_for_unknown_usernames_are_swept(client, monke
     with SessionLocal() as s:
         usernames = s.execute(select(LoginThrottle.username)).scalars().all()
     assert set(usernames) == {
-        auth.GLOBAL_LOGIN_THROTTLE_KEY,
+        auth._source_login_throttle_key("testclient"),
         auth._login_throttle_key("ghost-new"),
     }
 
 
-def test_global_login_admission_bounds_random_username_work(client, monkeypatch):
+def test_source_login_admission_bounds_random_username_work_without_global_lockout(
+    client, monkeypatch
+):
     from datetime import UTC, datetime
 
     from atlas_argus import auth
 
     monkeypatch.setattr(auth, "_now", lambda: datetime(2026, 7, 11, 10, 0, tzinfo=UTC))
-    monkeypatch.setattr(auth, "GLOBAL_LOGIN_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(auth, "SOURCE_LOGIN_MAX_ATTEMPTS", 2)
 
     calls = 0
     original_verify = auth._verify_password
@@ -584,6 +656,19 @@ def test_global_login_admission_bounds_random_username_work(client, monkeypatch)
     )
     assert blocked.status_code == 429
     assert calls == 2, "the rejected aggregate attempt must not run Argon2"
+
+    # Exhausting one source cannot lock out a login arriving from another.
+    from atlas_argus.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        reviewer, _token = auth.login(
+            session,
+            "mokafor",
+            "argus-demo",
+            source="unrelated-client",
+        )
+        session.commit()
+    assert reviewer.username == "mokafor"
 
 
 def test_unknown_username_login_still_runs_a_password_verify(client):

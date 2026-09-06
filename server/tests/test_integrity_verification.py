@@ -39,6 +39,15 @@ def test_case_audit_verification_detects_tampered_audit_event(client):
     )
 
 
+def test_complete_case_verification_requires_privilege_clearance(client):
+    login_as(client, "pnatarajan")
+
+    response = client.get("/api/cases/case-3407/audit/verify")
+
+    assert response.status_code == 403
+    assert "complete matter evidence set" in response.json()["detail"]
+
+
 def test_account_audit_verification_detects_tampering(client):
     login_as(client)
     created = client.post(

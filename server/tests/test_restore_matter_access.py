@@ -127,6 +127,34 @@ def test_restore_recovers_a_matter_stranded_by_account_deactivation():
         assert session.get(m.Reviewer, "rev-okafor").is_active is False
 
 
+def test_restore_recovers_when_only_ordinary_members_remain():
+    with SessionLocal() as session, session.begin():
+        session.execute(
+            text("UPDATE reviewer SET is_active = false WHERE id = 'rev-okafor'")
+        )
+        session.execute(
+            text(
+                "UPDATE reviewer SET role = 'Senior Aviation Counsel' "
+                "WHERE id = 'rev-natarajan'"
+            )
+        )
+        session.execute(
+            text(
+                "UPDATE case_member SET role = 'Claims Reviewer', is_active = true "
+                "WHERE case_id = :case_id AND reviewer_id = 'rev-natarajan'"
+            ),
+            {"case_id": CASE_ID},
+        )
+
+    result = restore_matter_access(case_id=CASE_ID, username="pnatarajan")
+
+    assert result.username == "pnatarajan"
+    restored = _membership("rev-natarajan")
+    assert restored is not None
+    assert restored.is_active is True
+    assert restored.role == "Senior Aviation Counsel"
+
+
 def test_restore_is_recorded_on_the_matter_audit_chain():
     _strand_by_membership()
 

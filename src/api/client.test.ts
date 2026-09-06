@@ -4,6 +4,8 @@ import {
   apiEnabled,
   fetchCase,
   fetchCaseById,
+  fetchPacketPdf,
+  fetchSourcePdf,
   isInvalidMfaCode,
   postCaseClaim,
   REQUEST_TIMEOUT_MS,
@@ -94,5 +96,97 @@ describe("API error classification", () => {
     expect(
       isInvalidMfaCode(new ApiError("Too many invalid MFA codes — try again shortly.", 429)),
     ).toBe(false);
+  });
+});
+
+describe("packet PDF download", () => {
+  it("accepts only a PDF matching the recorded SHA-256", async () => {
+    vi.stubEnv("VITE_API_URL", "/");
+    const bytes = new TextEncoder().encode("%PDF-1.7 verified");
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const expected = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    fetchMock.mockResolvedValueOnce(
+      new Response(bytes, {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": 'attachment; filename="packet.pdf"',
+        },
+      }),
+    );
+
+    const result = await fetchPacketPdf("case-a", "packet-a", expected);
+
+    expect(result.filename).toBe("packet.pdf");
+    expect(result.blob.type).toBe("application/pdf");
+  });
+
+  it("quarantines a PDF whose bytes do not match the recorded hash", async () => {
+    vi.stubEnv("VITE_API_URL", "/");
+    fetchMock.mockResolvedValueOnce(
+      new Response("%PDF-1.7 changed", {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      }),
+    );
+
+    await expect(
+      fetchPacketPdf("case-a", "packet-a", "0".repeat(64)),
+    ).rejects.toMatchObject({
+      message: "Downloaded PDF failed its SHA-256 integrity check.",
+      status: null,
+    });
+  });
+});
+
+describe("original source PDF", () => {
+  it("accepts only bytes matching both the matter hash and response hash", async () => {
+    vi.stubEnv("VITE_API_URL", "/");
+    const bytes = new TextEncoder().encode("%PDF-1.7 source evidence");
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const expected = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    fetchMock.mockResolvedValueOnce(
+      new Response(bytes, {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "x-content-sha256": expected,
+        },
+      }),
+    );
+
+    const result = await fetchSourcePdf("case a", "source/a", expected);
+
+    expect(result.type).toBe("application/pdf");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/cases/case%20a/sources/source%2Fa/file",
+    );
+  });
+
+  it("refuses a response when its integrity header disagrees", async () => {
+    vi.stubEnv("VITE_API_URL", "/");
+    const bytes = new TextEncoder().encode("%PDF-1.7 source evidence");
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const expected = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    fetchMock.mockResolvedValueOnce(
+      new Response(bytes, {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "x-content-sha256": "0".repeat(64),
+        },
+      }),
+    );
+
+    await expect(fetchSourcePdf("case-a", "source-a", expected)).rejects.toMatchObject({
+      message: "The source response does not match the evidence hash and cannot be displayed.",
+      status: null,
+    });
   });
 });

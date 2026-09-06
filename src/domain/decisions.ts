@@ -65,7 +65,7 @@ export function aggregateForClaim(
 export interface DecisionInput {
   conflictId: string;
   decisionType: DecisionType;
-  /** Required for mark_source_unreliable: the claim whose source is discredited. */
+  /** Required for mark_source_unreliable: the claim rejected in this conflict. */
   selectedClaimId: string | null;
   reasoning: string;
   reviewerName: string;
@@ -139,8 +139,8 @@ function transitionFor(input: DecisionInput, conflict: Conflict): Transition {
         claimBStatus: "escalated",
       };
     case "mark_source_unreliable": {
-      // The discredited claim is rejected; the surviving claim is NOT
-      // auto-accepted — discrediting one source proves nothing about the
+      // The selected claim is rejected; the surviving claim is NOT
+      // auto-accepted — rejecting one evidentiary position proves nothing about the
       // other claim, so it returns to the review queue.
       const aDiscredited = input.selectedClaimId === conflict.claimAId;
       return {
@@ -158,7 +158,7 @@ const DECISION_LABELS: Record<DecisionType, string> = {
   preserve_both: "Preserve both claims",
   mark_unresolved: "Mark unresolved",
   escalate: "Escalate for senior review",
-  mark_source_unreliable: "Mark source unreliable",
+  mark_source_unreliable: "Reject selected claim as unreliable",
 };
 
 export function decisionLabel(t: DecisionType): string {

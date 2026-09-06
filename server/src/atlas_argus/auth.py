@@ -15,18 +15,25 @@ import hashlib
 import hmac
 import secrets
 import struct
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .db import models as m
-from .domain.types import PermissionDenied, RateLimited, Unauthorized, ValidationFailure
+from .domain.types import (
+    DuplicateConflict,
+    PermissionDenied,
+    RateLimited,
+    Unauthorized,
+    ValidationFailure,
+)
 
 MIN_PASSWORD_LENGTH = 10
 
@@ -41,11 +48,13 @@ MAX_FAILED_LOGINS = 5
 LOCKOUT_SECONDS = 60.0
 LOGIN_LOCKED = "Too many failed sign-in attempts — try again shortly."
 LOGIN_THROTTLE_PREFIX = "login:"
-GLOBAL_LOGIN_THROTTLE_KEY = "login-global"
-GLOBAL_LOGIN_MAX_ATTEMPTS = 30
-GLOBAL_LOGIN_WINDOW = timedelta(seconds=60)
-GLOBAL_LOGIN_LOCKOUT_SECONDS = 60.0
-GLOBAL_LOGIN_LOCKED = "Too many sign-in attempts — try again shortly."
+SOURCE_LOGIN_THROTTLE_PREFIX = "login-source:"
+SOURCE_LOGIN_MAX_ATTEMPTS = 30
+SOURCE_LOGIN_WINDOW = timedelta(seconds=60)
+SOURCE_LOGIN_LOCKOUT_SECONDS = 60.0
+SOURCE_LOGIN_LOCKED = "Too many sign-in attempts from this source — try again shortly."
+LOGIN_HASH_CONCURRENCY = 2
+LOGIN_HASH_BUSY = "Sign-in capacity is busy — try again shortly."
 MFA_REQUIRED = "MFA verification required for this action."
 MFA_ENROLLMENT_REQUIRED = "MFA enrollment required for this action."
 MFA_ALREADY_ENABLED = (
@@ -80,6 +89,7 @@ def reset_login_throttle(session: Session | None = None) -> None:
 
 
 _hasher = PasswordHasher()
+_login_hash_slots = threading.BoundedSemaphore(LOGIN_HASH_CONCURRENCY)
 # Fixed hash to verify against for unknown usernames, so a login attempt
 # against a username that doesn't exist takes roughly the same time as one
 # against a real username with the wrong password — the error message is
@@ -104,6 +114,25 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def lock_reviewer_security(session: Session, reviewer_id: str) -> m.Reviewer | None:
+    """Serialize every password and MFA transition for one reviewer."""
+    acquired = session.execute(
+        text("SELECT pg_try_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+        {"lock_name": f"atlas_argus:reviewer_security:{reviewer_id}"},
+    ).scalar_one()
+    if not acquired:
+        raise DuplicateConflict(
+            "Another credential change for this reviewer is already in progress."
+        )
+    reviewer = session.execute(
+        select(m.Reviewer)
+        .where(m.Reviewer.id == reviewer_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    return reviewer
+
+
 def generate_mfa_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
 
@@ -126,15 +155,22 @@ def _totp_at(secret: str, for_time: int) -> str:
 
 
 def verify_totp(secret: str, code: str, *, at_time: int | None = None) -> bool:
+    return _matching_totp_counter(secret, code, at_time=at_time) is not None
+
+
+def _matching_totp_counter(
+    secret: str, code: str, *, at_time: int | None = None
+) -> int | None:
     clean = code.replace(" ", "").strip()
     if not clean.isdigit() or len(clean) != MFA_DIGITS:
-        return False
+        return None
     now = int(time.time()) if at_time is None else at_time
     for drift in range(-MFA_WINDOW, MFA_WINDOW + 1):
-        candidate = _totp_at(secret, now + drift * MFA_PERIOD_SECONDS)
+        candidate_time = now + drift * MFA_PERIOD_SECONDS
+        candidate = _totp_at(secret, candidate_time)
         if hmac.compare_digest(candidate, clean):
-            return True
-    return False
+            return int(candidate_time / MFA_PERIOD_SECONDS)
+    return None
 
 
 def mfa_otpauth_uri(reviewer: m.Reviewer, secret: str) -> str:
@@ -192,6 +228,11 @@ def _login_throttle_key(username: str) -> str:
     return f"{LOGIN_THROTTLE_PREFIX}{username}"
 
 
+def _source_login_throttle_key(source: str) -> str:
+    digest = hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
+    return f"{SOURCE_LOGIN_THROTTLE_PREFIX}{digest}"
+
+
 def _record_login_failure(session: Session, username: str) -> None:
     now = _now()
     throttle = _throttle_row(session, _login_throttle_key(username))
@@ -204,32 +245,26 @@ def _record_login_failure(session: Session, username: str) -> None:
     session.flush()
 
 
-def _consume_global_login_admission(session: Session) -> None:
-    """Bound aggregate login work across usernames and API processes.
-
-    The fixed row lock also serializes Argon2 verification, preventing a burst
-    of random usernames from running many expensive hashes concurrently.
-    ``updated_at`` is the start of the current fixed window, not the latest
-    attempt, so a low steady rate does not eventually lock everyone out.
-    """
+def _consume_source_login_admission(session: Session, source: str) -> None:
+    """Limit one network source without creating an all-user lockout switch."""
     now = _now()
-    throttle = _throttle_row(session, GLOBAL_LOGIN_THROTTLE_KEY)
+    throttle = _throttle_row(session, _source_login_throttle_key(source))
     if throttle.locked_until is not None:
         if now < throttle.locked_until:
-            raise RateLimited(GLOBAL_LOGIN_LOCKED)
+            raise RateLimited(SOURCE_LOGIN_LOCKED)
         throttle.failures = 0
         throttle.locked_until = None
         throttle.updated_at = now
 
-    if now - throttle.updated_at >= GLOBAL_LOGIN_WINDOW:
+    if now - throttle.updated_at >= SOURCE_LOGIN_WINDOW:
         throttle.failures = 0
         throttle.updated_at = now
 
     throttle.failures += 1
-    if throttle.failures > GLOBAL_LOGIN_MAX_ATTEMPTS:
-        throttle.locked_until = now + timedelta(seconds=GLOBAL_LOGIN_LOCKOUT_SECONDS)
+    if throttle.failures > SOURCE_LOGIN_MAX_ATTEMPTS:
+        throttle.locked_until = now + timedelta(seconds=SOURCE_LOGIN_LOCKOUT_SECONDS)
         session.flush()
-        raise RateLimited(GLOBAL_LOGIN_LOCKED)
+        raise RateLimited(SOURCE_LOGIN_LOCKED)
     session.flush()
 
 
@@ -259,14 +294,20 @@ def _sweep_stale_login_throttle(session: Session) -> None:
     )
 
 
-def login(session: Session, username: str, password: str) -> tuple[m.Reviewer, str]:
+def login(
+    session: Session,
+    username: str,
+    password: str,
+    *,
+    source: str = "unknown",
+) -> tuple[m.Reviewer, str]:
     """Verify credentials and mint a session; returns (reviewer, bearer token)."""
     purge_dead_sessions(session)
     _sweep_stale_login_throttle(session)
     username = _normalize_username(username)
     now = _now()
 
-    _consume_global_login_admission(session)
+    _consume_source_login_admission(session, source)
     throttle = _throttle_row(session, _login_throttle_key(username))
     if throttle.locked_until is not None and now < throttle.locked_until:
         raise RateLimited(LOGIN_LOCKED)
@@ -275,7 +316,12 @@ def login(session: Session, username: str, password: str) -> tuple[m.Reviewer, s
         select(m.Reviewer).where(m.Reviewer.username == username)
     ).scalar_one_or_none()
     password_hash = reviewer.password_hash if reviewer is not None else _DUMMY_HASH
-    password_ok = _verify_password(password_hash, password)
+    if not _login_hash_slots.acquire(blocking=False):
+        raise RateLimited(LOGIN_HASH_BUSY)
+    try:
+        password_ok = _verify_password(password_hash, password)
+    finally:
+        _login_hash_slots.release()
     if (
         reviewer is None
         or not password_ok
@@ -378,10 +424,24 @@ def _verify_mfa_attempt(
         throttle.locked_until = None
         throttle.updated_at = now
 
-    if verify_totp(secret, code):
-        clear_mfa_throttle(session, reviewer.id)
-        session.flush()
-        return
+    matched_counter = _matching_totp_counter(secret, code)
+    if matched_counter is not None:
+        consumed_key = f"mfa-used:{reviewer.id}:{matched_counter}"
+        consumed = session.execute(
+            pg_insert(m.LoginThrottle)
+            .values(
+                username=consumed_key,
+                failures=0,
+                locked_until=None,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=[m.LoginThrottle.username])
+            .returning(m.LoginThrottle.username)
+        ).scalar_one_or_none()
+        if consumed is not None:
+            clear_mfa_throttle(session, reviewer.id)
+            session.flush()
+            return
 
     throttle.failures += 1
     throttle.updated_at = now
@@ -393,11 +453,14 @@ def _verify_mfa_attempt(
     raise ValidationFailure(MFA_INVALID)
 
 
-def start_mfa_enrollment(reviewer: m.Reviewer) -> dict:
+def start_mfa_enrollment(session: Session, reviewer: m.Reviewer) -> dict:
     # Never replace an established factor from a password-authenticated session.
     # Login deliberately creates a session before MFA verification, so allowing
     # this endpoint to rotate an enabled secret would let a password-only attacker
     # enroll their own factor and then mark that same session MFA-verified.
+    reviewer = lock_reviewer_security(session, reviewer.id)
+    if reviewer is None:  # pragma: no cover - authenticated row cannot disappear
+        raise Unauthorized("Not signed in.")
     if mfa_enabled(reviewer):
         raise PermissionDenied(MFA_ALREADY_ENABLED)
     if reviewer.mfa_secret is None:
@@ -409,6 +472,9 @@ def start_mfa_enrollment(reviewer: m.Reviewer) -> dict:
 
 
 def enable_mfa(session: Session, reviewer: m.Reviewer, token: str | None, code: str) -> None:
+    reviewer = lock_reviewer_security(session, reviewer.id)
+    if reviewer is None:  # pragma: no cover - authenticated row cannot disappear
+        raise Unauthorized("Not signed in.")
     if reviewer.mfa_secret is None:
         raise ValidationFailure("Start MFA enrollment before verifying a code.")
     _verify_mfa_attempt(session, reviewer, reviewer.mfa_secret, code)
@@ -428,6 +494,9 @@ def mark_mfa_verified(session: Session, token: str | None) -> None:
 def verify_mfa_code(
     session: Session, reviewer: m.Reviewer, token: str | None, code: str
 ) -> None:
+    reviewer = lock_reviewer_security(session, reviewer.id)
+    if reviewer is None:  # pragma: no cover - authenticated row cannot disappear
+        raise Unauthorized("Not signed in.")
     if not mfa_enabled(reviewer):
         raise PermissionDenied(MFA_ENROLLMENT_REQUIRED)
     _verify_mfa_attempt(session, reviewer, reviewer.mfa_secret or "", code)
@@ -451,6 +520,9 @@ def change_password(
 ) -> None:
     """Rotate the reviewer's password and revoke every OTHER session — a
     stolen session does not survive the owner rotating their password."""
+    reviewer = lock_reviewer_security(session, reviewer.id)
+    if reviewer is None:  # pragma: no cover - authenticated row cannot disappear
+        raise Unauthorized("Not signed in.")
     if not _verify_password(reviewer.password_hash, current_password):
         raise Unauthorized("Current password is incorrect.")
     error = validate_new_password(new_password, current_password)

@@ -115,6 +115,9 @@ class TestSectionValidation:
         assert "cite at least one claim" in validate_section(
             "Title", "Z-1", long_text, [], self.OTHERS, self.KNOWN
         )
+        assert "only once" in validate_section(
+            "Title", "Z-1", long_text, ["clm-a4", "clm-a4"], self.OTHERS, self.KNOWN
+        )
         assert "not found: clm-x" in validate_section(
             "Title", "Z-1", long_text, ["clm-x"], self.OTHERS, self.KNOWN
         )

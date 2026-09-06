@@ -63,5 +63,21 @@ describe("case snapshot persistence", () => {
     expect(
       parseSnapshot(JSON.stringify({ ...good, activeReviewerId: 7 })),
     ).toBeNull();
+    expect(
+      parseSnapshot(
+        JSON.stringify({
+          ...good,
+          claims: [{ ...good.claims[0], confidence: "high" }, ...good.claims.slice(1)],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseSnapshot(
+        JSON.stringify({
+          ...good,
+          reportSections: [{ ...good.reportSections![0], claimIds: "clm-a4" }],
+        }),
+      ),
+    ).toBeNull();
   });
 });

@@ -133,7 +133,7 @@ DECISION_LABELS: Final[dict[str, str]] = {
     "preserve_both": "Preserve both claims",
     "mark_unresolved": "Mark unresolved",
     "escalate": "Escalate for senior review",
-    "mark_source_unreliable": "Mark source unreliable",
+    "mark_source_unreliable": "Reject selected claim as unreliable",
 }
 
 

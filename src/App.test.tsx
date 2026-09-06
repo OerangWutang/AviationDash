@@ -39,7 +39,7 @@ describe("Atlas Argus conflict review workflow", () => {
     // Default focus is Claim A (FDR readout).
     expect(within(rail).getByText(/FDR Data Readout/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Claim B/ }));
+    await user.click(screen.getByRole("button", { name: /^Claim B/ }));
     expect(within(rail).getByText(/Deposition Transcript — R\. Hollis/)).toBeInTheDocument();
     expect(within(rail).getByText(/Chain of custody/i)).toBeInTheDocument();
     expect(within(rail).getByText(/NOT REPORT-SAFE/)).toBeInTheDocument();
@@ -296,6 +296,11 @@ describe("Atlas Argus conflict review workflow", () => {
     renderApp();
     const nav = screen.getByRole("navigation", { name: "Case sections" });
     await user.click(within(nav).getByRole("button", { name: /Evidence packet/ }));
+
+    expect(
+      screen.queryByRole("complementary", { name: "Evidence Rail" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Disclosure preflight")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Generate packet" }));
 

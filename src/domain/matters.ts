@@ -38,6 +38,15 @@ export function validateNewMatter(input: NewMatterInput): string | null {
   ) {
     return "Accident date is not a real date.";
   }
+  const now = new Date();
+  const todayUtc = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
+  if (parsed.getTime() > todayUtc) {
+    return "Accident date must not be in the future.";
+  }
   if (!input.location.trim()) return "Location is required.";
   if (!MATTER_TYPES.some((t) => t.value === input.matterType)) {
     return "Select a matter type.";

@@ -10,14 +10,59 @@ case (through their conflicts), and install the same database append-only
 guard used by the other evidentiary records.
 """
 
+from datetime import UTC
+import hashlib
+import json
 from types import SimpleNamespace
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-from atlas_argus.db.guards import REVIEW_DECISION_GUARD_SQL
-from atlas_argus.integrity import chain_sha256, review_decision_content
+REVIEW_DECISION_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_review_decision_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'review_decision is append-only: % rejected', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_review_decision_append_only ON review_decision;
+CREATE TRIGGER trg_review_decision_append_only BEFORE UPDATE OR DELETE ON review_decision
+FOR EACH ROW EXECUTE FUNCTION forbid_review_decision_mutation();
+"""
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def chain_sha256(*, previous_hash: str | None, content: Any) -> str:
+    return _canonical_sha256(
+        {
+            "schema": "atlas_argus.integrity_chain_link.v1",
+            "previousHash": previous_hash,
+            "content": content,
+        }
+    )
+
+
+def review_decision_content(item: Any) -> dict:
+    return {
+        "schema": "atlas_argus.review_decision.v1",
+        "id": item.id,
+        "conflictId": item.conflict_id,
+        "decisionType": item.decision_type,
+        "selectedClaimId": item.selected_claim_id,
+        "reasoning": item.reasoning,
+        "reviewerName": item.reviewer_name,
+        "reviewerRole": item.reviewer_role,
+        "createdAt": item.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "previousStatus": item.previous_status,
+        "newStatus": item.new_status,
+        "reportImpact": item.report_impact,
+    }
 
 revision: str = "0016"
 down_revision: Union[str, None] = "0015"

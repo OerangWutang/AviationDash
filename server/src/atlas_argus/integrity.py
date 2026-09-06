@@ -136,8 +136,9 @@ def packet_artifact_manifest_hash(manifest: dict) -> str:
     return canonical_sha256(manifest_without_hashes)
 
 
-def packet_artifact_content(artifact: Any) -> dict:
-    document_sha256 = hashlib.sha256(artifact.document.encode("utf-8")).hexdigest()
+def packet_artifact_content_from_document_hash(
+    artifact: Any, document_sha256: str
+) -> dict:
     manifest_sha256 = packet_artifact_manifest_hash(dict(artifact.manifest))
     artifact_sha256 = canonical_sha256(
         {
@@ -174,7 +175,16 @@ def packet_artifact_content(artifact: Any) -> dict:
     pdf_hash = getattr(artifact, "pdf_sha256", None)
     if pdf_hash:
         content["pdfSha256"] = pdf_hash
+    idempotency_key = getattr(artifact, "idempotency_key", None)
+    if idempotency_key:
+        content["idempotencyKey"] = idempotency_key
+        content["idempotencyFingerprint"] = artifact.idempotency_fingerprint
     return content
+
+
+def packet_artifact_content(artifact: Any) -> dict:
+    document_sha256 = hashlib.sha256(artifact.document.encode("utf-8")).hexdigest()
+    return packet_artifact_content_from_document_hash(artifact, document_sha256)
 
 
 def extraction_manifest(

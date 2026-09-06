@@ -14,13 +14,52 @@ chain is now covered by ``verify_case_integrity`` — previously no exposed
 endpoint could catch this table being tampered with at all.
 """
 
+from datetime import UTC
+import hashlib
+import json
 from types import SimpleNamespace
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-from atlas_argus.integrity import chain_sha256, report_section_revision_content
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def chain_sha256(*, previous_hash: str | None, content: Any) -> str:
+    return _canonical_sha256(
+        {
+            "schema": "atlas_argus.integrity_chain_link.v1",
+            "previousHash": previous_hash,
+            "content": content,
+        }
+    )
+
+
+def report_section_revision_content(item: Any) -> dict:
+    return {
+        "schema": "atlas_argus.report_section_revision_row.v1",
+        "id": item.id,
+        "sectionId": item.section_id,
+        "caseId": item.case_id,
+        "title": item.title,
+        "paragraphRef": item.paragraph_ref,
+        "text": item.text,
+        "claimIds": list(item.claim_ids),
+        "authorReviewerId": item.author_reviewer_id,
+        "author": item.author,
+        "authorRole": item.author_role,
+        "createdAt": item.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "revisionReason": item.revision_reason,
+        "parentRevisionId": item.parent_revision_id,
+        "approvalState": item.approval_state,
+        "contentSha256": item.content_sha256,
+    }
 
 revision: str = "0015"
 down_revision: Union[str, None] = "0014"

@@ -27,6 +27,7 @@ interface GeneratedView {
   generatedByName: string | null;
   generatedByRole: string | null;
   hasPdf: boolean;
+  pdfSha256: string | null;
   pdfFilename: string | null;
   stats: { included: number; excluded: number; withheld: number };
   entries: {
@@ -67,6 +68,8 @@ export function PacketExportView() {
     generateServerPacket,
     fetchPacketArtifacts,
     fetchPacketArtifact,
+    requestMfa,
+    selectView,
   } = useStore();
   const reviewer = state.reviewers.find((r) => r.id === state.activeReviewerId);
   const matterRole = effectiveMatterRole(state);
@@ -86,9 +89,18 @@ export function PacketExportView() {
   const [loadingPast, setLoadingPast] = useState(false);
   const [pastError, setPastError] = useState<string | null>(null);
   const [loadingPacketId, setLoadingPacketId] = useState<string | null>(null);
+  const [mfaNotice, setMfaNotice] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const generateButtonRef = useRef<HTMLButtonElement>(null);
+  const pendingMfaRef = useRef(false);
+  const wasMfaGateOpenRef = useRef(state.mfaGate);
   const pastListRequestRef = useRef(0);
   const packetDetailRequestRef = useRef(0);
+  const generationKeyRef = useRef<{
+    caseId: string;
+    packetType: PacketType;
+    key: string;
+  } | null>(null);
 
   const loadPastPackets = async () => {
     if (state.dataMode !== "server" || !reviewer || !matterRole) return;
@@ -113,13 +125,91 @@ export function PacketExportView() {
   };
 
   useEffect(() => {
+    pastListRequestRef.current += 1;
+    packetDetailRequestRef.current += 1;
+    setGenerated(null);
+    setQuarantined(null);
+    setDownloadingPdf(false);
+    setPdfError(null);
+    setGenerating(false);
+    setExportError(null);
+    setPastPackets({ total: 0, items: [], verificationOk: true });
+    setPastError(null);
+    setLoadingPacketId(null);
     void loadPastPackets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.dataMode, state.caseFile.id]);
 
+  useEffect(() => {
+    const gateJustClosed = wasMfaGateOpenRef.current && !state.mfaGate;
+    wasMfaGateOpenRef.current = state.mfaGate;
+    if (!gateJustClosed || !pendingMfaRef.current) return;
+    pendingMfaRef.current = false;
+    if (state.mfa?.verified) {
+      setMfaNotice("MFA verified. Review the preflight, then generate when ready.");
+    }
+    generateButtonRef.current?.focus();
+  }, [state.mfa?.verified, state.mfaGate]);
+
   if (!reviewer || !matterRole) return null;
 
   const selectedPermission = packetPermission(packetType, matterRole);
+  const preflight = buildEvidencePacket({
+    caseFile: state.caseFile,
+    sections: state.reportSections,
+    claimsById: state.claims,
+    conflictsById: state.conflicts,
+    sourcesById: state.sources,
+    decisions: [...state.decisions.values()],
+    meta: {
+      packetId: "preflight",
+      type: packetType,
+      generatedAt: new Date(0).toISOString(),
+      generatedByName: reviewer.name,
+      generatedByRole: matterRole,
+    },
+  });
+  const preflightEntries = preflight.entries.map((entry) => {
+    const awaitingApproval =
+      serverMode &&
+      packetType === "production" &&
+      entry.disposition === "included" &&
+      entry.section.approvalState !== "approved";
+    return {
+      ...entry,
+      disposition: awaitingApproval ? ("excluded" as const) : entry.disposition,
+      reason: awaitingApproval
+        ? "Excluded from production until Senior Aviation Counsel approves the active revision."
+        : entry.reason,
+    };
+  });
+  const preflightStats = preflightEntries.reduce(
+    (stats, entry) => ({
+      ...stats,
+      [entry.disposition]: stats[entry.disposition] + 1,
+    }),
+    { included: 0, excluded: 0, withheld: 0 },
+  );
+  const preflightIssues = preflightEntries.filter(
+    (entry) =>
+      entry.disposition !== "included" ||
+      entry.impact.status === "blocked" ||
+      entry.impact.status === "privileged_material" ||
+      entry.impact.status === "needs_review",
+  );
+  const hasConflictIssue = preflightIssues.some(
+    (entry) => entry.impact.status === "blocked",
+  );
+  const previousComparablePacket = pastPackets.items.find(
+    (packet) => packet.packetType === packetType,
+  );
+  const changesSincePrevious = previousComparablePacket
+    ? state.auditEvents.filter(
+        (event) =>
+          event.at > previousComparablePacket.generatedAt &&
+          event.subjectType !== "export",
+      ).length
+    : null;
 
   const generateLocally = async (): Promise<GeneratedView | string> => {
     const packet = buildEvidencePacket({
@@ -159,6 +249,7 @@ export function PacketExportView() {
       generatedByName: packet.meta.generatedByName,
       generatedByRole: packet.meta.generatedByRole,
       hasPdf: false,
+      pdfSha256: null,
       pdfFilename: null,
       stats: packet.stats,
       entries: packet.entries.map((entry) => ({
@@ -173,8 +264,23 @@ export function PacketExportView() {
   };
 
   const generateOnServer = async (): Promise<GeneratedView | string> => {
-    const outcome = await generateServerPacket(packetType);
+    if (
+      generationKeyRef.current === null ||
+      generationKeyRef.current.caseId !== state.caseFile.id ||
+      generationKeyRef.current.packetType !== packetType
+    ) {
+      generationKeyRef.current = {
+        caseId: state.caseFile.id,
+        packetType,
+        key: crypto.randomUUID(),
+      };
+    }
+    const outcome = await generateServerPacket(
+      packetType,
+      generationKeyRef.current.key,
+    );
     if (!outcome.ok) return outcome.error;
+    generationKeyRef.current = null;
     const packet = outcome.packet;
     return {
       document: packet.document,
@@ -186,6 +292,7 @@ export function PacketExportView() {
       generatedByName: packet.generatedByName,
       generatedByRole: packet.generatedByRole,
       hasPdf: packet.hasPdf,
+      pdfSha256: packet.pdfSha256,
       pdfFilename: packet.pdfFilename,
       stats: packet.stats,
       entries: packet.entries.map((entry) => ({
@@ -204,12 +311,25 @@ export function PacketExportView() {
       setExportError(selectedPermission.reason);
       return;
     }
+    if (state.dataMode === "server" && state.mfa?.verified !== true) {
+      pendingMfaRef.current = true;
+      setMfaNotice("Verify MFA to generate this packet. Your packet choice is preserved.");
+      requestMfa();
+      return;
+    }
+    setMfaNotice(null);
     setGenerating(true);
     try {
       const result =
         state.dataMode === "server" ? await generateOnServer() : await generateLocally();
       if (typeof result === "string") {
-        setExportError(result);
+        if (/MFA (verification|enrollment) required/i.test(result)) {
+          pendingMfaRef.current = true;
+          setMfaNotice("Verify MFA to generate this packet. Your packet choice is preserved.");
+          requestMfa();
+        } else {
+          setExportError(result);
+        }
       } else {
         setGenerated(result);
         setQuarantined(null);
@@ -233,13 +353,14 @@ export function PacketExportView() {
   };
 
   const handleDownloadPdf = async () => {
-    if (!generated || !state.caseFile) return;
+    if (!generated || !state.caseFile || !generated.pdfSha256) return;
     setPdfError(null);
     setDownloadingPdf(true);
     try {
       const { blob, filename } = await fetchPacketPdf(
         state.caseFile.id,
         generated.packetId,
+        generated.pdfSha256,
       );
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -302,6 +423,7 @@ export function PacketExportView() {
         generatedByName: packet.generatedByName,
         generatedByRole: packet.generatedByRole,
         hasPdf: packet.hasPdf,
+        pdfSha256: packet.pdfSha256,
         pdfFilename: packet.pdfFilename,
         stats: packet.stats,
         entries: entries.map((entry) => ({
@@ -366,8 +488,94 @@ export function PacketExportView() {
             );
           })}
         </fieldset>
+        {!selectedPermission.allowed && (
+          <p className="permission-guidance">
+            Your <strong>{matterRole}</strong> matter role cannot generate evidence
+            packets. Ask a Senior Aviation Counsel assigned to this matter to generate
+            the packet or update the matter assignment in Reviewer admin.
+          </p>
+        )}
+        <div className="packet-preflight" aria-live="polite">
+          <strong>Disclosure preflight</strong>
+          <span>{preflightStats.included} included</span>
+          <span>{preflightStats.excluded} excluded</span>
+          <span>{preflightStats.withheld} withheld</span>
+          <small>
+            Based on the currently loaded matter. The server revalidates permissions,
+            approvals, privilege, and integrity when generating.
+          </small>
+          {previousComparablePacket ? (
+            <p className="packet-change-summary">
+              <strong>{changesSincePrevious}</strong> evidence or review change
+              {changesSincePrevious === 1 ? "" : "s"} since the last {packetType} packet
+              generated {formatDateTime(previousComparablePacket.generatedAt)}.
+            </p>
+          ) : (
+            <p className="packet-change-summary">
+              No earlier {packetType} packet is available for comparison.
+            </p>
+          )}
+        </div>
+        {preflightIssues.length > 0 ? (
+          <div className="preflight-issues" role="region" aria-label="Preflight issues">
+            <div className="preflight-issues__header">
+              <strong>{preflightIssues.length} item(s) need review</strong>
+              <span className="muted">
+                Resolve or explicitly accept these dispositions before generation.
+              </span>
+            </div>
+            <ul>
+              {preflightIssues.map((entry) => (
+                <li key={entry.section.id}>
+                  <span>
+                    <strong>{entry.section.title}</strong>{" "}
+                    <span className="mono muted">¶ {entry.section.paragraphRef}</span>
+                  </span>
+                  <span className="badge-row">
+                    <SectionStatusBadge status={entry.impact.status} />
+                    <span
+                      className={`badge ${
+                        entry.disposition === "withheld"
+                          ? "tone-privileged"
+                          : entry.disposition === "excluded"
+                            ? "tone-caution"
+                            : "tone-neutral"
+                      }`}
+                    >
+                      {entry.disposition}
+                    </span>
+                  </span>
+                  <p className="impact-note">{entry.reason}</p>
+                </li>
+              ))}
+            </ul>
+            <div className="save-row">
+              <button
+                type="button"
+                className="btn-secondary compact"
+                onClick={() => selectView("reports")}
+              >
+                Review report sections
+              </button>
+              {hasConflictIssue && (
+                <button
+                  type="button"
+                  className="btn-secondary compact"
+                  onClick={() => selectView("conflicts")}
+                >
+                  Review blocking conflicts
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <p className="preflight-ready">
+            No disclosure or approval exceptions found in the currently loaded matter.
+          </p>
+        )}
         <div className="save-row">
           <button
+            ref={generateButtonRef}
             type="button"
             className="btn-primary"
             disabled={generating || !selectedPermission.allowed}
@@ -380,6 +588,11 @@ export function PacketExportView() {
             at generation time — regenerate after new decisions.
           </span>
         </div>
+        {mfaNotice && (
+          <p className="action-notice" role="status">
+            {mfaNotice}
+          </p>
+        )}
         {exportError && <p className="form-error">{exportError}</p>}
       </section>
 
@@ -425,6 +638,9 @@ export function PacketExportView() {
                       <button
                         type="button"
                         className="btn-secondary compact"
+                        aria-label={`Open ${packet.packetType} packet generated ${formatDateTime(
+                          packet.generatedAt,
+                        )} (${packet.packetId})`}
                         disabled={
                           !packet.integrityOk || loadingPacketId === packet.packetId
                         }

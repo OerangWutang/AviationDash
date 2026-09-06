@@ -92,6 +92,19 @@ def ingested(session):
 # ── append-only ────────────────────────────────────────────────────────────
 
 
+def test_source_custody_metadata_is_immutable(session, ingested):
+    source_id = ingested["source"]
+    with pytest.raises(DBAPIError, match="custody metadata is immutable"):
+        session.execute(
+            text(
+                "UPDATE source_document SET custodian = 'Rewritten custodian' "
+                "WHERE id = :source_id"
+            ),
+            {"source_id": source_id},
+        )
+
+
+
 @pytest.mark.parametrize(
     ("table", "mutation"),
     [
@@ -196,6 +209,24 @@ def test_generic_update_cannot_repoint_a_claims_page(session, ingested):
             text("UPDATE claim SET source_page_extraction_id = :p WHERE id = 'clm-seed'"),
             {"p": ingested["page"]},
         )
+
+
+@pytest.mark.parametrize(
+    ("statement", "value"),
+    [
+        ("UPDATE claim SET quote = :value WHERE id = 'clm-seed'", "A different quote"),
+        ("UPDATE claim SET page_ref = :value WHERE id = 'clm-seed'", "p. 999"),
+        (
+            "UPDATE claim SET source_document_id = :value WHERE id = 'clm-seed'",
+            "src-other",
+        ),
+    ],
+)
+def test_generic_update_cannot_change_quote_verification_inputs(
+    session, ingested, statement, value
+):
+    with pytest.raises(DBAPIError, match="server-controlled"):
+        session.execute(text(statement), {"value": value})
 
 
 # ── set-once active run ────────────────────────────────────────────────────

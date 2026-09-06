@@ -49,6 +49,9 @@ export function validateReportSection(
   if (input.claimIds.length === 0) {
     return "No report text without source references — cite at least one claim.";
   }
+  if (new Set(input.claimIds).size !== input.claimIds.length) {
+    return "Each claim may be cited only once per report section.";
+  }
   for (const claimId of input.claimIds) {
     if (!claimsById.has(claimId)) {
       return `Cited claim not found: ${claimId}.`;

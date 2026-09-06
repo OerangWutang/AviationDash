@@ -23,11 +23,16 @@ services:
     # the packet renderer needed.
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
+    volumes:
+      # Read-only to the API. A separate scheduled owner process creates
+      # checkpoints and copies this directory to externally controlled WORM.
+      - ${ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR:?set ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR}:${ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR:?set ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR}:ro
+      - ${ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE:?set ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE}:${ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE:?set ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE}:ro
     # Admission control bounds how many uploads run at once; it does not bound
     # what one misconfigured request can allocate. Roughly
     # SOURCE_CHILD_MEMORY_LIMIT_BYTES x MAX_CONCURRENT_SOURCE_INGESTIONS plus
     # baseline API overhead.
-    mem_limit: 1536m
+    mem_limit: ${ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES:-1610612736}
     # EXACTLY ONE API PROCESS. The ingestion admission limit is per-process, so
     # running N workers multiplies both the concurrency and the memory ceiling
     # while appearing to honour the configured value. Scaling out requires a
@@ -56,6 +61,12 @@ services:
       ATLAS_ARGUS_MAX_PACKET_ENTRIES: ${ATLAS_ARGUS_MAX_PACKET_ENTRIES:-250}
       ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES: ${ATLAS_ARGUS_MAX_PACKET_DOCUMENT_BYTES:-2097152}
       ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES: ${ATLAS_ARGUS_MAX_PACKET_MANIFEST_BYTES:-524288}
+      ATLAS_ARGUS_MAX_CASE_STATE_ROWS: ${ATLAS_ARGUS_MAX_CASE_STATE_ROWS:-10000}
+      ATLAS_ARGUS_MAX_PACKET_HISTORY_ROWS: ${ATLAS_ARGUS_MAX_PACKET_HISTORY_ROWS:-1000}
+      ATLAS_ARGUS_REQUEST_BODY_TIMEOUT_SECONDS: ${ATLAS_ARGUS_REQUEST_BODY_TIMEOUT_SECONDS:-120}
+      ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES: ${ATLAS_ARGUS_API_MEMORY_LIMIT_BYTES:-1610612736}
+      ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR: ${ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR:?set ATLAS_ARGUS_INTEGRITY_ANCHOR_DIR}
+      ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE: ${ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE:?set ATLAS_ARGUS_INTEGRITY_ANCHOR_KEY_FILE}
       # Document ingestion. The API refuses to boot if the child memory limit
       # is under 3x the upload cap — a misconfiguration that would otherwise
       # surface as every upload dying on an allocation.
@@ -72,6 +83,7 @@ services:
       # WeasyPrint or its system libraries are missing, because degrading to
       # browser print-to-PDF is exactly what this replaced.
       ATLAS_ARGUS_MAX_PACKET_PDF_BYTES: ${ATLAS_ARGUS_MAX_PACKET_PDF_BYTES:-20971520}
+      ATLAS_ARGUS_MAX_CONCURRENT_PACKET_RENDERS: ${ATLAS_ARGUS_MAX_CONCURRENT_PACKET_RENDERS:-1}
       ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES: ${ATLAS_ARGUS_MAX_PACKET_ARTIFACT_BYTES:-3145728}
     depends_on:
       db:
@@ -84,7 +96,7 @@ services:
       start_period: 10s
 
   db:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
     restart: unless-stopped
     environment:
       POSTGRES_USER: atlas_owner
@@ -101,7 +113,7 @@ services:
       retries: 15
 
   proxy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     restart: unless-stopped
     ports:
       - "80:80"
@@ -115,7 +127,7 @@ services:
         condition: service_healthy
 
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: prom/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
     restart: unless-stopped
     volumes:
       - ./docs/deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro

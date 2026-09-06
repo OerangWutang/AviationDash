@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { EvidenceQuality, SourceDocument, SourcePage } from "../domain/types";
 import { WITHHOLDING_PRIVILEGE } from "../domain/types";
 import {
@@ -29,6 +29,8 @@ export function NewClaimForm({ source }: { source: SourceDocument }) {
   const [error, setError] = useState<string | null>(null);
   const [savedClaimId, setSavedClaimId] = useState<string | null>(null);
   const [citedPage, setCitedPage] = useState<SourcePage | null>(null);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   const reviewer = state.reviewers.find((r) => r.id === state.activeReviewerId);
   const withholding = WITHHOLDING_PRIVILEGE.includes(source.privilegeStatus);
@@ -53,24 +55,32 @@ export function NewClaimForm({ source }: { source: SourceDocument }) {
       : null;
 
   const handleSave = async () => {
-    const outcome = await createClaim({
-      sourceDocumentId: source.id,
-      text,
-      pageRef,
-      quote,
-      confidence: confidencePct / 100,
-      evidenceQuality: quality,
-      sourcePageExtractionId: citedPage?.id ?? null,
-    });
-    if (outcome.ok) {
-      setText("");
-      setPageRef("");
-      setQuote("");
-      setCitedPage(null);
-      setError(null);
-      setSavedClaimId(outcome.claim.id);
-    } else {
-      setError(outcome.error);
+    if (savingRef.current || blocker !== null) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const outcome = await createClaim({
+        sourceDocumentId: source.id,
+        text,
+        pageRef,
+        quote,
+        confidence: confidencePct / 100,
+        evidenceQuality: quality,
+        sourcePageExtractionId: citedPage?.id ?? null,
+      });
+      if (outcome.ok) {
+        setText("");
+        setPageRef("");
+        setQuote("");
+        setCitedPage(null);
+        setError(null);
+        setSavedClaimId(outcome.claim.id);
+      } else {
+        setError(outcome.error);
+      }
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -228,12 +238,17 @@ export function NewClaimForm({ source }: { source: SourceDocument }) {
         <button
           type="button"
           className="btn-primary"
-          disabled={blocker !== null}
+          disabled={blocker !== null || saving}
           onClick={() => void handleSave()}
         >
-          Save claim
+          {saving ? "Saving…" : "Save claim"}
         </button>
-        <button type="button" className="btn-secondary" onClick={() => setOpen(false)}>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={saving}
+          onClick={() => setOpen(false)}
+        >
           Close
         </button>
         {blocker && <span className="save-blocker">{blocker}</span>}

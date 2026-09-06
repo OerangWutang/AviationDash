@@ -306,6 +306,7 @@ def seed_database(session: Session) -> None:
         session.add(seed_revision)
         session.flush()
         report_section.active_revision_id = revision_id
+        report_section.approval_current = approval_evidence_hash is not None
     session.flush()
 
     # Human-readable ID sequences continue where the seed leaves off

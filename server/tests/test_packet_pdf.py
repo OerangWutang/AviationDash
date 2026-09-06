@@ -316,6 +316,18 @@ def test_tampering_with_the_stored_pdf_is_detected(senior):
     assert verification["ok"] is False
     assert any(issue["kind"] == "packet_pdf" for issue in verification["packetIssues"])
 
+    case_verification = senior.get(f"/api/cases/{CASE_ID}/audit/verify").json()
+    assert case_verification["ok"] is False
+    assert any(
+        issue["id"] == packet_id and issue["kind"] == "packet_pdf"
+        for issue in case_verification["packets"]["issues"]
+    )
+
+    listing = senior.get(f"/api/cases/{CASE_ID}/packets").json()
+    listed = next(packet for packet in listing["packets"] if packet["packetId"] == packet_id)
+    assert listing["verification"]["ok"] is False
+    assert listed["integrityOk"] is False
+
 
 # ── download ───────────────────────────────────────────────────────────────
 

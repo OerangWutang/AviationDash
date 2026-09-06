@@ -7,6 +7,7 @@ database, matching ``domain/sources.py``.
 from __future__ import annotations
 
 import re
+from datetime import date as calendar_date
 
 from . import types as t
 
@@ -29,8 +30,8 @@ MATTER_TYPES = frozenset(
     }
 )
 
-#: A new matter always starts open. Later status changes are a separate
-#: operation with their own audit trail, so intake does not accept one.
+#: The implemented lifecycle currently has one state. Intake does not accept
+#: a client-supplied status, and no close/reopen transition exists yet.
 INITIAL_STATUS = "open"
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -45,6 +46,19 @@ def _require_text(value: str | None, *, field: str, maximum: int) -> str:
     return text
 
 
+def validate_accident_date(value: str | None) -> str:
+    date = (value or "").strip()
+    if not _ISO_DATE.match(date):
+        raise t.ValidationFailure("Accident date must be an ISO date (YYYY-MM-DD).")
+    try:
+        parsed = calendar_date.fromisoformat(date)
+    except ValueError as exc:
+        raise t.ValidationFailure("Accident date is not a real date.") from exc
+    if parsed > calendar_date.today():
+        raise t.ValidationFailure("Accident date must not be in the future.")
+    return date
+
+
 def validate_new_matter(
     *,
     name: str | None,
@@ -57,19 +71,7 @@ def validate_new_matter(
     if matter_type not in MATTER_TYPES:
         raise t.ValidationFailure("Unknown matter type.")
 
-    date = (accident_date or "").strip()
-    if not _ISO_DATE.match(date):
-        raise t.ValidationFailure("Accident date must be an ISO date (YYYY-MM-DD).")
-    # Stored as text in this schema, so the format check above is not enough on
-    # its own — reject a well-shaped but impossible date rather than carrying
-    # it into every downstream display and export.
-    year, month, day = (int(part) for part in date.split("-"))
-    try:
-        from datetime import date as _date
-
-        _date(year, month, day)
-    except ValueError as exc:
-        raise t.ValidationFailure("Accident date is not a real date.") from exc
+    date = validate_accident_date(accident_date)
 
     return {
         "name": _require_text(name, field="Matter name", maximum=MAX_NAME_CHARS),

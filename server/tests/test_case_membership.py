@@ -19,8 +19,8 @@ def _insert_other_case(*, with_okafor_membership: bool = False) -> None:
                 aircraft="N000AA",
                 accident_date="2026-01-01",
                 location="Test Range",
-                matter_type="Demonstration",
-                status="active",
+                matter_type="wrongful_death",
+                status="open",
                 docket_ref="OTHER-1",
             )
         )
@@ -246,6 +246,27 @@ def test_flag_conflict_does_not_leak_privilege_status_inside_own_case(client):
     assert withheld.json()["detail"] == missing.json()["detail"] == "Both claims must exist."
 
 
+def test_public_section_approval_state_is_role_independent(client):
+    login_as(client, "mokafor")
+    counsel_state = client.get("/api/cases/case-3407").json()
+    counsel_section = next(
+        section
+        for section in counsel_state["reportSections"]
+        if section["id"] == "rpt-acft"
+    )
+    assert counsel_section["approvalState"] == "approved"
+
+    assert client.post("/api/auth/logout").status_code == 200
+    login_as(client, "pnatarajan")
+    reviewer_state = client.get("/api/cases/case-3407").json()
+    reviewer_section = next(
+        section
+        for section in reviewer_state["reportSections"]
+        if section["id"] == "rpt-acft"
+    )
+    assert reviewer_section["approvalState"] == "approved"
+
+
 def test_section_citation_does_not_leak_privilege_status(client):
     """Citing a privilege-withheld claim must fail exactly like citing a claim
     identifier that does not exist."""
@@ -392,6 +413,34 @@ def test_admin_cannot_remove_own_case_membership(client):
     assert "cannot remove your own access" in response.json()["detail"]
 
 
+def test_admin_cannot_downgrade_the_last_case_senior(client):
+    login_as(client, "mokafor")
+    response = client.post(
+        "/api/admin/cases/case-3407/members",
+        json={"reviewerId": "rev-okafor", "role": "Claims Reviewer"},
+    )
+
+    assert response.status_code == 422
+    assert "retain at least one active Senior" in response.json()["detail"]
+
+
+def test_global_deactivation_cannot_strand_a_matter_without_senior(client):
+    with SessionLocal() as session, session.begin():
+        session.execute(
+            text(
+                "UPDATE reviewer SET role = 'Senior Aviation Counsel' "
+                "WHERE id = 'rev-natarajan'"
+            )
+        )
+
+    login_as(client, "pnatarajan")
+    response = client.post("/api/admin/reviewers/rev-okafor/deactivate")
+
+    assert response.status_code == 422
+    assert "case-3407" in response.json()["detail"]
+    assert "no active Senior" in response.json()["detail"]
+
+
 def test_non_counsel_cannot_manage_case_membership(client):
     login_as(client, "pnatarajan")
     response = client.get("/api/admin/cases/case-3407/members")
@@ -453,6 +502,7 @@ def test_global_senior_downgraded_on_matter_loses_case_powers(client):
     assert internal.status_code == 201
     packet_id = internal.json()["packetId"]
 
+    _set_matter_role("rev-natarajan", "Senior Aviation Counsel")
     _set_matter_role("rev-okafor", "Claims Reviewer")
 
     state = client.get("/api/case")

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Claim, Conflict, DecisionType, SourceDocument } from "../domain/types";
 import { MIN_REASONING_LENGTH, decisionLabel } from "../domain/decisions";
 import { decisionPermission } from "../domain/permissions";
@@ -29,7 +29,7 @@ const DECISION_ORDER: { type: DecisionType; description: string }[] = [
   {
     type: "mark_source_unreliable",
     description:
-      "Reject the claim backed by the unreliable source; the other claim returns to the review queue (not auto-accepted).",
+      "Reject the selected claim in this conflict; the other claim returns to the review queue and is not auto-accepted.",
   },
 ];
 
@@ -46,7 +46,7 @@ export function ReviewDecisionForm({
   sourceA: SourceDocument;
   sourceB: SourceDocument;
 }) {
-  const { state, saveDecision } = useStore();
+  const { state, saveDecision, requestMfa } = useStore();
   const reviewer = state.reviewers.find((r) => r.id === state.activeReviewerId);
   const matterRole = effectiveMatterRole(state);
 
@@ -54,22 +54,41 @@ export function ReviewDecisionForm({
   const [unreliableClaimId, setUnreliableClaimId] = useState<string | null>(null);
   const [reasoning, setReasoning] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [mfaNotice, setMfaNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const pendingMfaRef = useRef(false);
+  const wasMfaGateOpenRef = useRef(state.mfaGate);
 
   const lastSaved = state.lastSavedDecisionId
     ? state.decisions.get(state.lastSavedDecisionId)
     : null;
   const savedHere = lastSaved && lastSaved.conflictId === conflict.id ? lastSaved : null;
 
+  useEffect(() => {
+    const gateJustClosed = wasMfaGateOpenRef.current && !state.mfaGate;
+    wasMfaGateOpenRef.current = state.mfaGate;
+    if (!gateJustClosed || !pendingMfaRef.current) return;
+    pendingMfaRef.current = false;
+    if (state.mfa?.verified) {
+      setMfaNotice("MFA verified. Your draft is preserved; save when ready.");
+    }
+    saveButtonRef.current?.focus();
+  }, [state.mfa?.verified, state.mfaGate]);
+
   if (!reviewer || !matterRole) return null;
 
   const reasoningShortfall = Math.max(0, MIN_REASONING_LENGTH - reasoning.trim().length);
+  const restrictedDecisions = DECISION_ORDER.filter(
+    ({ type }) => !decisionPermission(type, matterRole, conflict).allowed,
+  ).length;
 
   let blocker: string | null = null;
   if (!decisionType) {
     blocker = "Select a decision to continue.";
   } else if (decisionType === "mark_source_unreliable" && !unreliableClaimId) {
-    blocker = "Select which claim’s source is unreliable.";
+    blocker = "Select which claim should be rejected as unreliable.";
   } else if (reasoningShortfall > 0) {
     blocker = `A reasoning note is required — ${reasoningShortfall} more character${
       reasoningShortfall === 1 ? "" : "s"
@@ -77,7 +96,15 @@ export function ReviewDecisionForm({
   }
 
   const handleSave = async () => {
-    if (!decisionType || saving) return;
+    if (!decisionType || savingRef.current) return;
+    if (state.dataMode === "server" && state.mfa?.verified !== true) {
+      pendingMfaRef.current = true;
+      setMfaNotice("Verify MFA to save this decision. Your draft will be preserved.");
+      requestMfa();
+      return;
+    }
+    setMfaNotice(null);
+    savingRef.current = true;
     setSaving(true);
     try {
       const outcome = await saveDecision({
@@ -92,10 +119,15 @@ export function ReviewDecisionForm({
         setUnreliableClaimId(null);
         setReasoning("");
         setSaveError(null);
+      } else if (/MFA (verification|enrollment) required/i.test(outcome.error)) {
+        pendingMfaRef.current = true;
+        setMfaNotice("Verify MFA to save this decision. Your draft will be preserved.");
+        requestMfa();
       } else {
         setSaveError(outcome.error);
       }
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -141,9 +173,18 @@ export function ReviewDecisionForm({
         })}
       </fieldset>
 
+      {restrictedDecisions > 0 && (
+        <p className="permission-guidance">
+          {restrictedDecisions} decision option{restrictedDecisions === 1 ? " is" : "s are"}{" "}
+          unavailable for your <strong>{matterRole}</strong> matter role. A Senior
+          Aviation Counsel assigned to this matter can record critical dispositive
+          decisions or update the assignment in Reviewer admin.
+        </p>
+      )}
+
       {decisionType === "mark_source_unreliable" && (
         <fieldset className="unreliable-picker">
-          <legend>Which claim’s source is unreliable?</legend>
+          <legend>Which claim should be rejected as unreliable?</legend>
           {[
             { claim: claimA, source: sourceA, label: "Claim A" },
             { claim: claimB, source: sourceB, label: "Claim B" },
@@ -178,6 +219,7 @@ export function ReviewDecisionForm({
 
       <div className="save-row">
         <button
+          ref={saveButtonRef}
           type="button"
           className="btn-primary"
           disabled={blocker !== null || saving}
@@ -187,6 +229,12 @@ export function ReviewDecisionForm({
         </button>
         {blocker && <span className="save-blocker">{blocker}</span>}
       </div>
+
+      {mfaNotice && (
+        <p className="action-notice" role="status">
+          {mfaNotice}
+        </p>
+      )}
 
       {saveError && <p className="form-error">{saveError}</p>}
 

@@ -139,7 +139,11 @@ export function apiEnabled(): boolean {
  *  a long scanned exhibit. The default timeout is sized for ordinary JSON
  *  calls, so aborting an upload at that mark would look like a server fault
  *  and — worse — leave the user retrying work that was still succeeding. */
-export const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+// The server permits at most 15 minutes of ingestion. Leave one minute for
+// request transfer and response delivery so the browser never gives up first.
+export const UPLOAD_TIMEOUT_MS = 16 * 60 * 1000;
+export const PACKET_GENERATION_TIMEOUT_MS = 2 * 60 * 1000;
+export const PDF_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
 
 async function request<T>(
   path: string,
@@ -192,6 +196,9 @@ async function request<T>(
     if (timedOut) {
       throw new ApiError("Case service request timed out — try again.", null);
     }
+    if (upstreamSignal?.aborted) {
+      throw new ApiError("Request cancelled.", null);
+    }
     throw new ApiError(
       "Case service unreachable — check that the server is running.",
       null,
@@ -202,10 +209,15 @@ async function request<T>(
   }
 }
 
-function post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
+function post<T>(
+  path: string,
+  body: unknown,
+  timeoutMs?: number,
+  init?: RequestInit,
+): Promise<T> {
   return request<T>(
     path,
-    { method: "POST", body: JSON.stringify(body) },
+    { ...init, method: "POST", body: JSON.stringify(body) },
     timeoutMs,
   );
 }
@@ -320,37 +332,68 @@ export const postCaseClaim = (
 export async function fetchPacketPdf(
   caseId: string,
   packetId: string,
+  expectedSha256: string,
 ): Promise<{ blob: Blob; filename: string }> {
   const base = baseUrl();
   if (base === null) {
     throw new ApiError("API is not configured (VITE_API_URL unset).", null);
   }
-  const response = await fetch(
-    `${base}/api${casePath(caseId, `/packets/${encodeURIComponent(packetId)}/pdf`)}`,
-    { credentials: "include" },
-  );
-  if (!response.ok) {
-    let detail = `Could not download the packet PDF (${response.status}).`;
-    try {
-      const body: unknown = await response.json();
-      if (
-        typeof body === "object" &&
-        body !== null &&
-        typeof (body as { detail?: unknown }).detail === "string"
-      ) {
-        detail = (body as { detail: string }).detail;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, PDF_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(
+      `${base}/api${casePath(caseId, `/packets/${encodeURIComponent(packetId)}/pdf`)}`,
+      { credentials: "include", signal: controller.signal },
+    );
+    if (!response.ok) {
+      let detail = `Could not download the packet PDF (${response.status}).`;
+      try {
+        const body: unknown = await response.json();
+        if (
+          typeof body === "object" &&
+          body !== null &&
+          typeof (body as { detail?: unknown }).detail === "string"
+        ) {
+          detail = (body as { detail: string }).detail;
+        }
+      } catch {
+        // keep the generic message
       }
-    } catch {
-      // keep the generic message
+      throw new ApiError(detail, response.status);
     }
-    throw new ApiError(detail, response.status);
+    if (!(response.headers.get("content-type") ?? "").startsWith("application/pdf")) {
+      throw new ApiError("The packet service returned a non-PDF response.", null);
+    }
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    const bytes = await response.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const actualSha256 = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (actualSha256 !== expectedSha256) {
+      throw new ApiError(
+        "Downloaded PDF failed its SHA-256 integrity check.",
+        null,
+      );
+    }
+    return {
+      blob: new Blob([bytes], { type: "application/pdf" }),
+      filename: match?.[1] ?? `${packetId}.pdf`,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (timedOut) {
+      throw new ApiError("Packet PDF download timed out — try again.", null);
+    }
+    throw new ApiError("Could not download the packet PDF.", null);
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const match = /filename="([^"]+)"/.exec(disposition);
-  return {
-    blob: await response.blob(),
-    filename: match?.[1] ?? `${packetId}.pdf`,
-  };
 }
 
 export interface CreateMatterResponse {
@@ -394,10 +437,11 @@ export const postCaseSource = (
     contentBase64: string;
     idempotencyKey?: string;
   },
+  options: { signal?: AbortSignal } = {},
 ): Promise<UploadSourceResponse> =>
   // Extraction is synchronous and OCR-bound, so this one call gets the long
   // timeout; every other call keeps the short default.
-  post(casePath(caseId, "/sources"), body, UPLOAD_TIMEOUT_MS);
+  post(casePath(caseId, "/sources"), body, UPLOAD_TIMEOUT_MS, options);
 
 export interface SourcePagesResponse {
   sourceId: string;
@@ -423,6 +467,78 @@ export const getCaseSourcePages = (
     ),
   );
 };
+
+/** Load the exact uploaded source PDF for in-context review.
+ *
+ * The server verifies its stored bytes before responding; the browser verifies
+ * the response again against the hash already present in the matter payload so
+ * a stale or altered response is never displayed as evidence.
+ */
+export async function fetchSourcePdf(
+  caseId: string,
+  sourceId: string,
+  expectedSha256: string,
+): Promise<Blob> {
+  const base = baseUrl();
+  if (base === null) {
+    throw new ApiError("API is not configured (VITE_API_URL unset).", null);
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, PDF_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(
+      `${base}/api${casePath(
+        caseId,
+        `/sources/${encodeURIComponent(sourceId)}/file`,
+      )}`,
+      { credentials: "include", signal: controller.signal },
+    );
+    if (!response.ok) {
+      let detail = `Could not open the source document (${response.status}).`;
+      try {
+        const body: unknown = await response.json();
+        if (
+          typeof body === "object" &&
+          body !== null &&
+          typeof (body as { detail?: unknown }).detail === "string"
+        ) {
+          detail = (body as { detail: string }).detail;
+        }
+      } catch {
+        // Keep the response-status message when the body is not JSON.
+      }
+      throw new ApiError(detail, response.status);
+    }
+    if (!(response.headers.get("content-type") ?? "").startsWith("application/pdf")) {
+      throw new ApiError("The source service returned a non-PDF response.", null);
+    }
+    const bytes = await response.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const actualSha256 = [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const headerSha256 = response.headers.get("x-content-sha256");
+    if (actualSha256 !== expectedSha256 || headerSha256 !== expectedSha256) {
+      throw new ApiError(
+        "The source response does not match the evidence hash and cannot be displayed.",
+        null,
+      );
+    }
+    return new Blob([bytes], { type: "application/pdf" });
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (timedOut) {
+      throw new ApiError("Source document request timed out — try again.", null);
+    }
+    throw new ApiError("Could not open the source document.", null);
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
 
 export const postClaimQuoteVerification = (
   caseId: string,
@@ -547,6 +663,7 @@ export interface ServerPacket {
   filename: string;
   document: string;
   auditEvent: AuditEvent;
+  replayed: boolean;
 }
 
 export interface PacketArtifactSummary {
@@ -565,7 +682,7 @@ export interface PacketArtifactSummary {
   pdfSha256: string | null;
   hasPdf: boolean;
   pdfFilename: string | null;
-  packetIntegrityHash: string;
+  packetIntegrityHash: string | null;
   stats: { included: number; excluded: number; withheld: number };
   integrityOk: boolean;
 }
@@ -578,7 +695,8 @@ export interface PacketArtifactList {
   verification: {
     ok: boolean;
     rootIntegrityHash: string | null;
-    checked: number;
+    checked: number | null;
+    scope: "page-artifacts";
   };
   packets: PacketArtifactSummary[];
 }
@@ -602,17 +720,22 @@ export interface PacketArtifactDetail extends PacketArtifactSummary {
   verification: {
     ok: boolean;
     packetIssues: Array<{ id: string; kind: string }>;
-    chain: { ok: boolean; issues: Array<{ id: string; kind: string }> };
+    chain: {
+      ok: boolean;
+      scope?: "artifact";
+      issues: Array<{ id: string; kind: string }>;
+    };
   };
 }
 
 export const generatePacket = (body: { packetType: string }): Promise<ServerPacket> =>
-  post("/packets", body);
+  post("/packets", body, PACKET_GENERATION_TIMEOUT_MS);
 
 export const generateCasePacket = (
   caseId: string,
-  body: { packetType: string },
-): Promise<ServerPacket> => post(casePath(caseId, "/packets"), body);
+  body: { packetType: string; idempotencyKey?: string },
+): Promise<ServerPacket> =>
+  post(casePath(caseId, "/packets"), body, PACKET_GENERATION_TIMEOUT_MS);
 
 export const fetchCasePackets = (
   caseId: string,

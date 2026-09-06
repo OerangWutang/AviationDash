@@ -30,8 +30,8 @@ def _manifest() -> dict:
             "aircraft": "Airbus A320-200",
             "accidentDate": "2025-04-19",
             "location": "North Sea",
-            "matterType": "Accident litigation",
-            "status": "Active — evidence intake",
+            "matterType": "wrongful_death",
+            "status": "open",
             "docketRef": "MATTER-2025-001",
         },
         "initialSeniorCounsel": {

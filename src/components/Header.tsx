@@ -45,7 +45,7 @@ export function Header() {
             </select>
           </label>
         ) : (
-          <span className="case-chip">{state.caseFile.name}</span>
+          <span className="case-chip">{state.caseFile.name || "No matter selected"}</span>
         )}
         <span className="mono muted">{state.caseFile.docketRef}</span>
         <span

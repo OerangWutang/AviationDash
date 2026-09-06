@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { MATTER_TYPES, validateNewMatter, type NewMatterInput } from "../domain/matters";
 import { useStore } from "../state/store";
@@ -25,9 +25,10 @@ export function NewMatterForm() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<NewMatterInput>(EMPTY);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
-  const reviewer = state.reviewers.find((r) => r.id === state.activeReviewerId);
+  const reviewer = state.sessionReviewer;
   if (state.dataMode !== "server" || reviewer?.role !== "Senior Aviation Counsel") {
     return null;
   }
@@ -54,15 +55,20 @@ export function NewMatterForm() {
       className="new-matter new-matter--open"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (blocker || busy) return;
+        if (blocker || busyRef.current) return;
+        busyRef.current = true;
         setBusy(true);
-        const outcome = await createMatter(draft);
-        setBusy(false);
-        if (outcome.ok) {
-          setDraft(EMPTY);
-          setOpen(false);
-        } else {
-          setError(outcome.error);
+        try {
+          const outcome = await createMatter(draft);
+          if (outcome.ok) {
+            setDraft(EMPTY);
+            setOpen(false);
+          } else {
+            setError(outcome.error);
+          }
+        } finally {
+          busyRef.current = false;
+          setBusy(false);
         }
       }}
     >

@@ -34,6 +34,7 @@ from .schemas import (
     SectionUpdateRequest,
     VerifyClaimQuoteRequest,
 )
+from .admission import packet_render_slot, source_ingestion_slot
 
 router = APIRouter(prefix="/api")
 
@@ -59,14 +60,21 @@ def require_unmanaged_reviewer(
     separate managed transaction. Sharing this dependency keeps reviewer
     updates and throttle side effects attached to one session.
     """
-    reviewer = auth.resolve_session(session, request.cookies.get(auth.SESSION_COOKIE))
-    if reviewer is None:
-        raise Unauthorized("Not signed in.")
-    set_rls_reviewer_context(session, reviewer.id)
+    reviewer = require_unmanaged_session_reviewer(request, session)
     if reviewer.must_change_password:
         from ..domain.types import PermissionDenied
 
         raise PermissionDenied("Password change required before using the case API.")
+    return reviewer
+
+
+def require_unmanaged_session_reviewer(
+    request: Request, session: Session = Depends(get_unmanaged_session)
+) -> m.Reviewer:
+    reviewer = auth.resolve_session(session, request.cookies.get(auth.SESSION_COOKIE))
+    if reviewer is None:
+        raise Unauthorized("Not signed in.")
+    set_rls_reviewer_context(session, reviewer.id)
     return reviewer
 
 
@@ -144,11 +152,18 @@ def health(session: Session = Depends(get_session)) -> dict:
 @router.post("/auth/login")
 def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     session: Session = Depends(get_unmanaged_session),
 ) -> dict:
     try:
-        reviewer, token = auth.login(session, body.username, body.password)
+        source = request.client.host if request.client is not None else "unknown"
+        reviewer, token = auth.login(
+            session,
+            body.username,
+            body.password,
+            source=source,
+        )
         session.commit()
     except DomainError:
         session.commit()
@@ -208,9 +223,10 @@ def mfa_status(
 
 @router.post("/auth/mfa/enroll")
 def start_mfa_enrollment(
+    session: Session = Depends(get_session),
     reviewer: m.Reviewer = Depends(require_reviewer),
 ) -> dict:
-    return auth.start_mfa_enrollment(reviewer)
+    return auth.start_mfa_enrollment(session, reviewer)
 
 
 @router.post("/auth/mfa/enable")
@@ -233,7 +249,7 @@ def verify_mfa(
     body: MfaCodeRequest,
     request: Request,
     session: Session = Depends(get_unmanaged_session),
-    reviewer: m.Reviewer = Depends(require_unmanaged_reviewer),
+    reviewer: m.Reviewer = Depends(require_unmanaged_session_reviewer),
 ) -> dict:
     token = request.cookies.get(auth.SESSION_COOKIE)
     _commit_mfa_attempt(
@@ -250,6 +266,10 @@ def change_password(
     session: Session = Depends(get_session),
     reviewer: m.Reviewer = Depends(require_session_reviewer),
 ) -> dict:
+    if auth.mfa_enabled(reviewer):
+        auth.require_mfa(
+            session, reviewer, request.cookies.get(auth.SESSION_COOKIE)
+        )
     auth.change_password(
         session,
         reviewer,
@@ -370,30 +390,33 @@ def create_case_source(case_id: str, body: NewSourceRequest, request: Request) -
         if replay is not None:
             return replay
 
-    extraction = ingestion.run_isolated_extraction(raw_bytes)
+    with source_ingestion_slot():
+        extraction = ingestion.run_isolated_extraction(raw_bytes)
 
-    with short_request_session() as session:
-        reviewer = require_mfa_reviewer(request, session)
-        services.authorize_case_action(session, reviewer, case_id)
         try:
-            return services.create_source_op(
-                session,
-                reviewer,
-                case_id=case_id,
-                prepared=prepared,
-                raw_bytes=raw_bytes,
-                extraction=extraction,
-            )
+            with short_request_session() as session:
+                reviewer = require_mfa_reviewer(request, session)
+                services.authorize_case_action(session, reviewer, case_id)
+                return services.create_source_op(
+                    session,
+                    reviewer,
+                    case_id=case_id,
+                    prepared=prepared,
+                    raw_bytes=raw_bytes,
+                    extraction=extraction,
+                )
         except services._ConcurrentIdempotentUpload:
+            # Leave the failed transaction context before querying the winner.
+            # SQLAlchemy rolls the IntegrityError back as this exception unwinds.
             pass
 
-    # The losing side of a genuine race: another request with the same
-    # idempotency key committed first. Return its result rather than an error.
-    with short_request_session() as session:
-        reviewer = require_mfa_reviewer(request, session)
-        return services.resolve_idempotent_race(
-            session, reviewer, case_id=case_id, prepared=prepared
-        )
+        # The losing side of a genuine race: another request with the same
+        # idempotency key committed first. Return its result rather than an error.
+        with short_request_session() as session:
+            reviewer = require_mfa_reviewer(request, session)
+            return services.resolve_idempotent_race(
+                session, reviewer, case_id=case_id, prepared=prepared
+            )
 
 
 @router.get("/cases/{case_id}/sources/{source_id}/pages")
@@ -412,6 +435,32 @@ def list_case_source_pages(
         source_id=source_id,
         offset=offset,
         limit=limit,
+    )
+
+
+@router.get("/cases/{case_id}/sources/{source_id}/file")
+def view_case_source_file(
+    case_id: str,
+    source_id: str,
+    session: Session = Depends(get_session),
+    reviewer: m.Reviewer = Depends(require_reviewer),
+) -> Response:
+    """Serve the exact uploaded PDF for in-context evidence review."""
+    pdf, filename, content_sha256 = services.get_source_document_pdf(
+        session,
+        reviewer,
+        case_id=case_id,
+        source_id=source_id,
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-Content-SHA256": content_sha256,
+        },
     )
 
 
@@ -617,7 +666,13 @@ def generate_packet(
     session: Session = Depends(get_session),
     reviewer: m.Reviewer = Depends(require_mfa_reviewer),
 ) -> dict:
-    return services.generate_packet_op(session, reviewer, packet_type=body.packet_type)
+    with packet_render_slot():
+        return services.generate_packet_op(
+            session,
+            reviewer,
+            packet_type=body.packet_type,
+            idempotency_key=body.idempotency_key,
+        )
 
 
 @router.post("/cases/{case_id}/packets", status_code=201)
@@ -627,9 +682,14 @@ def generate_case_packet(
     session: Session = Depends(get_session),
     reviewer: m.Reviewer = Depends(require_mfa_reviewer),
 ) -> dict:
-    return services.generate_packet_op(
-        session, reviewer, packet_type=body.packet_type, case_id=case_id
-    )
+    with packet_render_slot():
+        return services.generate_packet_op(
+            session,
+            reviewer,
+            packet_type=body.packet_type,
+            case_id=case_id,
+            idempotency_key=body.idempotency_key,
+        )
 
 
 @router.get("/packets")

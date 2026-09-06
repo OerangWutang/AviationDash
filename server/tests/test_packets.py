@@ -6,14 +6,15 @@ from __future__ import annotations
 import hashlib
 import threading
 
+import pytest
 from conftest import login_as
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from atlas_argus import packet as packet_module
 from atlas_argus import services
-from atlas_argus.db.models import PacketArtifact, ReportSection, Reviewer
+from atlas_argus.db.models import Claim, PacketArtifact, ReportSection, Reviewer, SourceDocument
 from atlas_argus.db.session import SessionLocal
+from atlas_argus.domain.types import DuplicateConflict
 from atlas_argus.integrity import canonical_sha256
 
 # Content that exists only in privileged material / internal assessments.
@@ -27,6 +28,47 @@ def _generate(client, packet_type):
 
 
 class TestProductionPacket:
+    def test_generation_idempotency_replays_one_persisted_artifact(self, client):
+        login_as(client)
+        request = {
+            "packetType": "production",
+            "idempotencyKey": "55555555-5555-5555-5555-555555555555",
+        }
+
+        first = client.post("/api/cases/case-3407/packets", json=request)
+        second = client.post("/api/cases/case-3407/packets", json=request)
+
+        assert first.status_code == 201, first.text
+        assert second.status_code == 201, second.text
+        assert first.json()["replayed"] is False
+        assert second.json()["replayed"] is True
+        assert second.json()["packetId"] == first.json()["packetId"]
+        assert second.json()["packetIntegrityHash"] == first.json()["packetIntegrityHash"]
+        with SessionLocal() as session:
+            artifacts = list(
+                session.query(PacketArtifact).filter_by(
+                    case_id="case-3407",
+                    idempotency_key=request["idempotencyKey"],
+                )
+            )
+            assert len(artifacts) == 1
+
+    def test_generation_idempotency_key_cannot_change_packet_type(self, client):
+        login_as(client)
+        key = "66666666-6666-6666-6666-666666666666"
+        assert client.post(
+            "/api/cases/case-3407/packets",
+            json={"packetType": "production", "idempotencyKey": key},
+        ).status_code == 201
+
+        conflict = client.post(
+            "/api/cases/case-3407/packets",
+            json={"packetType": "internal", "idempotencyKey": key},
+        )
+
+        assert conflict.status_code == 409
+        assert "different packet request" in conflict.json()["detail"]
+
     def test_redaction_manifest_and_privilege_log(self, client):
         login_as(client)
         response = _generate(client, "production")
@@ -103,6 +145,140 @@ class TestProductionPacket:
         assert "warning horn a good while" in document  # counterpart via disclosure
         assert "neither has been suppressed" in document
         assert "expert reconciliation" not in document  # reasoning stays internal
+
+    def test_transitive_preserved_conflicts_are_all_disclosed(self, client):
+        login_as(client)
+        first = client.post(
+            "/api/conflicts/cf-1/decisions",
+            json={
+                "decisionType": "preserve_both",
+                "reasoning": "Preserve the first edge in the disclosure chain.",
+                "expectedVersion": 1,
+            },
+        )
+        assert first.status_code == 201, first.text
+        second = client.post(
+            "/api/conflicts",
+            json={
+                "claimAId": "clm-b1",
+                "claimBId": "clm-a4",
+                "conflictType": "factual",
+                "severity": "medium",
+                "summary": "Timeline account conflicts with the autopilot-state evidence.",
+            },
+        )
+        assert second.status_code == 201, second.text
+        conflict = second.json()["conflict"]
+        preserved = client.post(
+            f"/api/conflicts/{conflict['id']}/decisions",
+            json={
+                "decisionType": "preserve_both",
+                "reasoning": "Preserve the transitive counterpart for disclosure.",
+                "expectedVersion": conflict["version"],
+            },
+        )
+        assert preserved.status_code == 201, preserved.text
+
+        created = client.post(
+            "/api/report-sections",
+            json={
+                "title": "Transitive disclosure chain",
+                "paragraphRef": "DISC-CHAIN",
+                "text": "The initial timeline account is retained with every connected conflict.",
+                "claimIds": ["clm-a1"],
+            },
+        )
+        assert created.status_code == 201, created.text
+        section = created.json()["section"]
+        approved = client.post(
+            f"/api/report-sections/{section['id']}/approve",
+            params={"expectedVersion": section["version"]},
+        )
+        assert approved.status_code == 200, approved.text
+
+        document = _generate(client, "production").json()["document"]
+        assert document.count("Conflict disclosure") >= 2
+        assert "AP engage discrete TRUE through 22:16:27" in document
+
+    def test_unverified_preserved_counterpart_blocks_production_approval(self, client):
+        login_as(client)
+        with SessionLocal() as session, session.begin():
+            session.execute(
+                text("SELECT set_config('atlas_argus.verification_write', '1', true)")
+            )
+            counterpart = session.get(Claim, "clm-b1")
+            assert counterpart is not None
+            counterpart.quote_verification = "manual_verification_required"
+            counterpart.quote_verification_basis_sha256 = None
+            counterpart.report_eligibility = "needs_review"
+
+        decision = client.post(
+            "/api/conflicts/cf-1/decisions",
+            json={
+                "decisionType": "preserve_both",
+                "reasoning": "Both accounts remain preserved while quote verification continues.",
+                "expectedVersion": 1,
+            },
+        )
+        assert decision.status_code == 201
+        created = client.post(
+            "/api/report-sections",
+            json={
+                "title": "Preserved timeline evidence",
+                "paragraphRef": "DISC-UNVERIFIED",
+                "text": "The verified account remains relevant to the external chronology.",
+                "claimIds": ["clm-a1"],
+            },
+        )
+        assert created.status_code == 201
+        section = created.json()["section"]
+
+        approval = client.post(
+            f"/api/report-sections/{section['id']}/approve",
+            params={"expectedVersion": section["version"]},
+        )
+        assert approval.status_code == 422
+        assert "not report-eligible" in approval.json()["detail"]
+
+    def test_rendered_source_custody_cannot_change_after_approval(self, client):
+        login_as(client)
+        created = client.post(
+            "/api/report-sections",
+            json={
+                "title": "Custody-bound finding",
+                "paragraphRef": "CUST-1",
+                "text": "The approved finding remains bound to its rendered custody record.",
+                "claimIds": ["clm-a4"],
+            },
+        )
+        section = created.json()["section"]
+        approved = client.post(
+            f"/api/report-sections/{section['id']}/approve",
+            params={"expectedVersion": section["version"]},
+        )
+        assert approved.status_code == 200
+
+        with SessionLocal() as session, pytest.raises(
+            DBAPIError, match="custody metadata is immutable"
+        ):
+            claim = session.get(Claim, "clm-a4")
+            assert claim is not None
+            source = session.get(SourceDocument, claim.source_document_id)
+            assert source is not None
+            source.custody = [
+                *source.custody,
+                {
+                    "at": "2026-01-01T00:00:00Z",
+                    "actor": "Records unit",
+                    "action": "Corrected custody annotation",
+                },
+            ]
+            session.flush()
+
+        packet = _generate(client, "production")
+        assert packet.status_code == 201
+        assert "Custody-bound finding" in packet.json()["document"]
+        assert "CUST-1" in packet.json()["document"]
 
     def test_reserved_for_counsel_and_validated(self, client):
         login_as(client, "pnatarajan")
@@ -220,11 +396,10 @@ class TestProductionPacket:
         assert "autopilot disengagement fully" in document
         assert "TAMPERED" not in document
 
-    def test_generation_uses_one_committed_case_snapshot(self, monkeypatch):
+    def test_render_does_not_hold_case_lock_and_stale_snapshot_retries(self, monkeypatch):
         with SessionLocal() as session:
             section = session.get(ReportSection, "rpt-acft")
             assert section is not None
-            original_revision_id = section.active_revision_id
             section_payload = {
                 "title": section.title,
                 "paragraph_ref": section.paragraph_ref,
@@ -235,27 +410,19 @@ class TestProductionPacket:
                 "case_id": section.case_id,
             }
 
-        packet_started_build = threading.Event()
-        allow_packet_build = threading.Event()
-        mutation_reached_audit_lock = threading.Event()
+        packet_started_render = threading.Event()
+        allow_packet_render = threading.Event()
         results: dict[str, dict] = {}
         errors: list[Exception] = []
-        original_build_packet = packet_module.build_packet
-        original_audit_lock = services._lock_audit_chain
+        original_render = services._render_packet_pdf
 
-        def observed_build_packet(*args, **kwargs):
-            packet_started_build.set()
-            if not allow_packet_build.wait(timeout=10):
-                raise TimeoutError("packet snapshot test did not release build")
-            return original_build_packet(*args, **kwargs)
+        def observed_render(*args, **kwargs):
+            packet_started_render.set()
+            if not allow_packet_render.wait(timeout=10):
+                raise TimeoutError("packet render-lock test did not release rendering")
+            return original_render(*args, **kwargs)
 
-        def observed_audit_lock(session, case_id):
-            if threading.current_thread().name == "case-mutation-worker":
-                mutation_reached_audit_lock.set()
-            return original_audit_lock(session, case_id)
-
-        monkeypatch.setattr(packet_module, "build_packet", observed_build_packet)
-        monkeypatch.setattr(services, "_lock_audit_chain", observed_audit_lock)
+        monkeypatch.setattr(services, "_render_packet_pdf", observed_render)
 
         def generate_worker() -> None:
             try:
@@ -288,30 +455,25 @@ class TestProductionPacket:
         mutation_thread = threading.Thread(target=mutate_worker, name="case-mutation-worker")
         packet_thread.start()
         try:
-            assert packet_started_build.wait(timeout=10)
+            assert packet_started_render.wait(timeout=10)
             mutation_thread.start()
-            # save_section_op has written its new revision and is now waiting
-            # on the packet transaction's case-audit lock before it can commit.
-            assert mutation_reached_audit_lock.wait(timeout=10)
+            mutation_thread.join(timeout=10)
+            assert not mutation_thread.is_alive(), (
+                "case mutation was blocked by packet PDF rendering"
+            )
         finally:
-            allow_packet_build.set()
+            allow_packet_render.set()
             packet_thread.join(timeout=10)
             if mutation_thread.ident is not None:
                 mutation_thread.join(timeout=10)
 
         assert not packet_thread.is_alive()
         assert not mutation_thread.is_alive()
-        if errors:
-            raise errors[0]
-
-        packet_entry = next(
-            entry for entry in results["packet"]["entries"] if entry["sectionId"] == "rpt-acft"
-        )
-        assert packet_entry["revisionId"] == original_revision_id
-        with SessionLocal() as session:
-            revised_section = session.get(ReportSection, "rpt-acft")
-            assert revised_section is not None
-            assert revised_section.active_revision_id != original_revision_id
+        assert "mutation" in results
+        assert "packet" not in results
+        assert len(errors) == 1
+        assert isinstance(errors[0], DuplicateConflict)
+        assert "changed while the packet was rendering" in str(errors[0])
 
 
 class TestInternalPacket:

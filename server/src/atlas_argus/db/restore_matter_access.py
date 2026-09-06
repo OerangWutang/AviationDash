@@ -66,7 +66,7 @@ class RestoreResult:
 
 
 def _effective_members(session: Session, case_id: str) -> list[str]:
-    """Reviewers who can actually act on this matter right now.
+    """Senior administrators who can restore ordinary access right now.
 
     A membership only confers authority if the account behind it can still
     sign in, so both flags have to hold.
@@ -78,7 +78,9 @@ def _effective_members(session: Session, case_id: str) -> list[str]:
             .where(
                 m.CaseMember.case_id == case_id,
                 m.CaseMember.is_active.is_(True),
+                m.CaseMember.role == SENIOR_COUNSEL_ROLE,
                 m.Reviewer.is_active.is_(True),
+                m.Reviewer.role == SENIOR_COUNSEL_ROLE,
             )
             .order_by(m.CaseMember.reviewer_id)
         ).scalars()
@@ -183,7 +185,7 @@ def _restore_locked(session: Session, *, case_id: str, username: str, owner_url:
 
     if reachable := _effective_members(session, case.id):
         raise RestoreRefused(
-            f"Matter {case.id} is not stranded — it still has active membership for: "
+            f"Matter {case.id} is not stranded — it still has an active Senior for: "
             + ", ".join(reachable)
             + ". Use the membership administration API."
         )

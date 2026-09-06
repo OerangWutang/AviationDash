@@ -10,7 +10,28 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from atlas_argus.db.guards import PACKET_ARTIFACT_GUARD_SQL, REPORT_REVISION_GUARD_SQL
+REPORT_REVISION_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_report_revision_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'report_section_revision is append-only: % rejected', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_report_revision_append_only ON report_section_revision;
+CREATE TRIGGER trg_report_revision_append_only
+BEFORE UPDATE OR DELETE ON report_section_revision
+FOR EACH ROW EXECUTE FUNCTION forbid_report_revision_mutation();
+"""
+PACKET_ARTIFACT_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_packet_artifact_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'packet_artifact is append-only: % rejected', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_packet_artifact_append_only ON packet_artifact;
+CREATE TRIGGER trg_packet_artifact_append_only
+BEFORE UPDATE OR DELETE ON packet_artifact
+FOR EACH ROW EXECUTE FUNCTION forbid_packet_artifact_mutation();
+"""
 
 revision: str = "0005"
 down_revision: Union[str, None] = "0004"

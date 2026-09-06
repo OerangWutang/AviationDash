@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restore a backup into a throwaway database and verify core tables.
+# Restore a backup into a throwaway database and verify schema plus evidence.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/lib/production_compose.sh
@@ -41,7 +41,15 @@ docker compose exec -T db pg_restore \
   --exit-on-error \
   --single-transaction \
   < "$staged_backup"
-docker compose exec -T db psql -U "$db_user" -d "$drill_db" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) > 0 FROM case_file" | grep -qx 't'
-docker compose exec -T db psql -U "$db_user" -d "$drill_db" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) > 0 FROM reviewer" | grep -qx 't'
-docker compose exec -T db psql -U "$db_user" -d "$drill_db" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) > 0 FROM audit_event" | grep -qx 't'
+if [[ "${ATLAS_ARGUS_ENV:-dev}" == "production" ]]; then
+  drill_password="${ATLAS_ARGUS_MIGRATION_DB_PASSWORD:?set ATLAS_ARGUS_MIGRATION_DB_PASSWORD}"
+else
+  drill_password="${ATLAS_ARGUS_DB_PASSWORD:-atlas}"
+fi
+drill_url="postgresql+psycopg://${db_user}:${drill_password}@db:5432/${drill_db}"
+docker compose run --rm --no-deps \
+  -e ATLAS_ARGUS_ENV=dev \
+  -e ATLAS_ARGUS_DATABASE_URL="$drill_url" \
+  -e ATLAS_ARGUS_MIGRATION_DATABASE_URL="$drill_url" \
+  api python -m atlas_argus.db.verify_restored_database
 printf 'restore drill ok: %s -> %s\n' "$backup" "$drill_db"

@@ -40,17 +40,6 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from atlas_argus.db.guards import (
-    ACTIVE_EXTRACTION_RUN_GUARD_SQL,
-    CLAIM_QUOTE_VERIFICATION_GUARD_SQL,
-    CLAIM_VERIFICATION_FIELD_GUARD_SQL,
-    SOURCE_DOCUMENT_FILE_GUARD_SQL,
-    SOURCE_EXTRACTION_RUN_GUARD_SQL,
-    SOURCE_PAGE_EXTRACTION_GUARD_SQL,
-    SOURCE_PRIVILEGE_RLS_SQL,
-    SOURCE_PRIVILEGE_SCOPED_TABLES,
-)
-
 revision: str = "0017"
 down_revision: Union[str, None] = "0016"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -80,6 +69,97 @@ REVIEWER_ROLES = (
     "Safety Investigator",
     "Senior Aviation Counsel",
 )
+SOURCE_PRIVILEGE_SCOPED_TABLES = (
+    "source_document_file",
+    "source_extraction_run",
+    "source_page_extraction",
+)
+
+
+def _append_only_guard(table: str) -> str:
+    function_name = f"forbid_{table}_mutation"
+    trigger_name = f"trg_{table}_append_only"
+    return f"""
+CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION '{table} is append-only: % rejected', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS {trigger_name} ON {table};
+CREATE TRIGGER {trigger_name}
+    BEFORE UPDATE OR DELETE ON {table}
+    FOR EACH ROW EXECUTE FUNCTION {function_name}();
+"""
+
+
+# Every schema definition used by this historical revision is frozen here.
+SOURCE_DOCUMENT_FILE_GUARD_SQL = _append_only_guard("source_document_file")
+SOURCE_EXTRACTION_RUN_GUARD_SQL = _append_only_guard("source_extraction_run")
+SOURCE_PAGE_EXTRACTION_GUARD_SQL = _append_only_guard("source_page_extraction")
+CLAIM_QUOTE_VERIFICATION_GUARD_SQL = _append_only_guard("claim_quote_verification")
+
+ACTIVE_EXTRACTION_RUN_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_active_extraction_run_change() RETURNS trigger AS $$
+BEGIN
+    IF NEW.active_extraction_run_id IS DISTINCT FROM OLD.active_extraction_run_id
+       AND OLD.active_extraction_run_id IS NOT NULL THEN
+        RAISE EXCEPTION
+            'source_document.active_extraction_run_id is set once (% -> %): '
+            'reprocessing requires a reviewed activation workflow',
+            OLD.active_extraction_run_id, NEW.active_extraction_run_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_source_document_active_run_set_once ON source_document;
+CREATE TRIGGER trg_source_document_active_run_set_once
+    BEFORE UPDATE ON source_document
+    FOR EACH ROW EXECUTE FUNCTION forbid_active_extraction_run_change();
+"""
+
+CLAIM_VERIFICATION_FIELD_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_unmanaged_claim_verification_write() RETURNS trigger AS $$
+BEGIN
+    IF (NEW.quote_verification IS DISTINCT FROM OLD.quote_verification
+        OR NEW.quote_verification_basis_sha256 IS DISTINCT FROM OLD.quote_verification_basis_sha256
+        OR NEW.source_page_extraction_id IS DISTINCT FROM OLD.source_page_extraction_id)
+       AND coalesce(current_setting('atlas_argus.verification_write', true), '') <> '1' THEN
+        RAISE EXCEPTION
+            'claim quote verification fields are server-controlled: '
+            'route this write through the verification helper';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_claim_verification_fields_managed ON claim;
+CREATE TRIGGER trg_claim_verification_fields_managed
+    BEFORE UPDATE ON claim
+    FOR EACH ROW EXECUTE FUNCTION forbid_unmanaged_claim_verification_write();
+"""
+
+SOURCE_PRIVILEGE_RLS_SQL = """
+CREATE OR REPLACE FUNCTION atlas_argus_source_visible(
+    target_source_id text, target_case_id text
+) RETURNS boolean AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM case_member cm
+          JOIN source_document sd
+            ON sd.id = target_source_id
+           AND sd.case_id = target_case_id
+         WHERE cm.case_id = target_case_id
+           AND cm.reviewer_id = current_setting('atlas_argus.reviewer_id', true)
+           AND cm.is_active
+           AND (
+               cm.role = 'Senior Aviation Counsel'
+               OR sd.privilege_status NOT IN ('attorney_client', 'work_product', 'restricted')
+           )
+    )
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public;
+"""
 
 
 def _in(column: str, values: Sequence[str]) -> str:

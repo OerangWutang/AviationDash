@@ -66,6 +66,7 @@ export interface AppState {
   dataMode: DataMode;
   bootStatus: "loading" | "unauthenticated" | "ready" | "error";
   bootError: string | null;
+  persistenceError: string | null;
   /** Authenticated identity (server mode only). */
   sessionReviewer: Reviewer | null;
   /** Absolute server-provided expiry for the authenticated session. */
@@ -121,8 +122,10 @@ type Action =
   | { type: "case_loaded"; payload: api.CasePayload }
   | { type: "case_refreshed"; payload: api.CasePayload }
   | { type: "cases_loaded"; cases: api.CaseSummary[] }
+  | { type: "empty_workspace" }
   | { type: "boot_loading" }
   | { type: "boot_failed"; error: string }
+  | { type: "persistence_result"; error: string | null }
   | {
       type: "session_established";
       reviewer: Reviewer;
@@ -167,6 +170,7 @@ function seedState(): AppState {
     dataMode: "local",
     bootStatus: "ready",
     bootError: null,
+    persistenceError: null,
     sessionReviewer: null,
     sessionExpiresAt: null,
     caseMembership: null,
@@ -229,6 +233,7 @@ function reducer(state: AppState, action: Action): AppState {
       action.type === "case_loaded" ||
       action.type === "case_refreshed" ||
       action.type === "cases_loaded" ||
+      action.type === "empty_workspace" ||
       action.type === "reviewer_admin_changed")
   ) {
     return state;
@@ -371,10 +376,36 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case "cases_loaded":
       return { ...state, availableCases: action.cases };
+    case "empty_workspace":
+      return {
+        ...state,
+        bootStatus: "ready",
+        bootError: null,
+        caseFile: EMPTY_CASE_FILE,
+        caseMembership: null,
+        reviewers: [],
+        sources: new Map(),
+        claims: new Map(),
+        conflicts: new Map(),
+        conflictOrder: [],
+        decisions: new Map(),
+        auditEvents: [],
+        reportSections: [],
+        view:
+          state.sessionReviewer?.role === "Senior Aviation Counsel"
+            ? "admin"
+            : "conflicts",
+        selectedConflictId: "",
+        selectedClaimId: null,
+        activeReviewerId: state.sessionReviewer?.id ?? "",
+        lastSavedDecisionId: null,
+      };
     case "boot_loading":
       return { ...state, bootStatus: "loading", bootError: null };
     case "boot_failed":
       return { ...state, bootStatus: "error", bootError: action.error };
+    case "persistence_result":
+      return { ...state, persistenceError: action.error };
     case "session_established":
       return {
         ...state,
@@ -562,6 +593,7 @@ interface StoreValue {
   /** Server mode: the backend builds, redacts, and hash-stamps the packet. */
   generateServerPacket: (
     packetType: string,
+    idempotencyKey?: string,
   ) => Promise<{ ok: true; packet: api.ServerPacket } | { ok: false; error: string }>;
   /** Server mode: list and retrieve exact persisted packet artifacts. */
   fetchPacketArtifacts: (input?: {
@@ -734,15 +766,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const loadCase = useCallback(
     async (
-      caseId: string | undefined,
+      caseId: string,
       sessionScope: SessionOperationScope,
     ): Promise<SimpleOutcome> => {
-      const requestScope = beginCaseRequest(caseId ?? "", sessionScope);
+      const requestScope = beginCaseRequest(caseId, sessionScope);
       if (requestScope === null) return supersededFailure();
       try {
-        const payload = caseId ? await api.fetchCaseById(caseId) : await api.fetchCase();
+        const payload = await api.fetchCaseById(caseId);
         if (!isCaseScopeCurrent(requestScope)) return supersededFailure();
-        if (caseId && payload.caseFile.id !== caseId) {
+        if (payload.caseFile.id !== caseId) {
           return { ok: false, error: "The case service returned the wrong matter." };
         }
         currentCaseIdRef.current = payload.caseFile.id;
@@ -764,6 +796,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       isCaseScopeCurrent,
       supersededFailure,
     ],
+  );
+
+  const loadFirstCase = useCallback(
+    async (
+      cases: api.CaseSummary[],
+      sessionScope: SessionOperationScope,
+    ): Promise<SimpleOutcome> => {
+      const firstCaseId = cases[0]?.caseFile.id;
+      if (firstCaseId) return loadCase(firstCaseId, sessionScope);
+      if (beginCaseRequest("", sessionScope) === null) return supersededFailure();
+      currentCaseIdRef.current = "";
+      dispatch({ type: "empty_workspace" });
+      return { ok: true };
+    },
+    [beginCaseRequest, loadCase, supersededFailure],
   );
 
   const bootFromServer = useCallback(async () => {
@@ -801,7 +848,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (sessionScope === null) return;
       const cases = await loadCases(sessionScope);
       if (cases === null) return;
-      await loadCase(cases[0]?.caseFile.id, sessionScope);
+      await loadFirstCase(cases, sessionScope);
     } catch (error) {
       if (sessionScope === null || !isSessionScopeCurrent(sessionScope)) return;
       if (api.isUnauthorized(error)) {
@@ -810,7 +857,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: "boot_failed", error: api.errorMessage(error) });
       }
     }
-  }, [beginSession, clearServerSession, isSessionScopeCurrent, loadCase, loadCases]);
+  }, [
+    beginSession,
+    clearServerSession,
+    isSessionScopeCurrent,
+    loadCases,
+    loadFirstCase,
+  ]);
 
   useEffect(() => {
     if (mode === "server") {
@@ -949,7 +1002,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (sessionScope === null) return supersededFailure();
         const cases = await loadCases(sessionScope);
         if (cases === null) return supersededFailure();
-        return await loadCase(cases[0]?.caseFile.id, sessionScope);
+        return await loadFirstCase(cases, sessionScope);
       } catch (error) {
         if (sessionScope === null || !isSessionScopeCurrent(sessionScope)) {
           return supersededFailure();
@@ -966,8 +1019,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       beginSession,
       clearServerSession,
       isSessionScopeCurrent,
-      loadCase,
       loadCases,
+      loadFirstCase,
       supersededFailure,
     ],
   );
@@ -1062,7 +1115,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           try {
             const cases = await loadCases(sessionScope);
             if (cases === null) return supersededFailure();
-            return await loadCase(cases[0]?.caseFile.id, sessionScope);
+            return await loadFirstCase(cases, sessionScope);
           } catch (error) {
             if (!isSessionScopeCurrent(sessionScope)) return supersededFailure();
             if (api.isUnauthorized(error)) {
@@ -1086,8 +1139,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       captureSessionScope,
       clearServerSession,
       isSessionScopeCurrent,
-      loadCase,
       loadCases,
+      loadFirstCase,
       supersededFailure,
     ],
   );
@@ -1207,7 +1260,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // local mode only; in server mode the backend is the record.
   useEffect(() => {
     if (state.dataMode === "server") return;
-    saveSnapshot(toSnapshot(state));
+    dispatch({
+      type: "persistence_result",
+      error: saveSnapshot(toSnapshot(state)),
+    });
   }, [
     state.dataMode,
     state.claims,
@@ -1576,12 +1632,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const generateServerPacket = useCallback(
     async (
       packetType: string,
+      idempotencyKey?: string,
     ): Promise<{ ok: true; packet: api.ServerPacket } | { ok: false; error: string }> => {
       const s = stateRef.current;
       const scope = captureCaseScope(s.caseFile.id);
       if (scope === null) return supersededFailure();
       try {
-        const packet = await api.generateCasePacket(s.caseFile.id, { packetType });
+        const packet = await api.generateCasePacket(s.caseFile.id, {
+          packetType,
+          idempotencyKey,
+        });
         if (!isCaseScopeCurrent(scope)) return supersededFailure();
         dispatch({ type: "audit_appended", event: packet.auditEvent });
         return { ok: true, packet };

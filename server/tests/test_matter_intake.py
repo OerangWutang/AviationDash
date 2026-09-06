@@ -274,6 +274,7 @@ def test_opening_a_matter_requires_verified_mfa(client):
         ("accidentDate", "02-11-2025"),
         ("accidentDate", "2025-13-45"),
         ("accidentDate", "2025-02-30"),
+        ("accidentDate", "2999-01-01"),
         ("docketRef", ""),
     ],
 )

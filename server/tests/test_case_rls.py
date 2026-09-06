@@ -63,7 +63,7 @@ def _insert_other_case(*, member_reviewer_id: str | None = None) -> None:
                   (id, name, aircraft, accident_date, location, matter_type, status, docket_ref)
                 VALUES
                   ('case-other', 'Other Matter', 'Q400', '2026-01-01', 'Other',
-                   'civil', 'active', 'OTHER')
+                   'wrongful_death', 'open', 'OTHER')
                 """
             )
         )

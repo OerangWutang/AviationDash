@@ -21,7 +21,7 @@ function sessionInfo(
   return {
     reviewer: OKAFOR,
     mustChangePassword: false,
-    mfa: { enabled: false, verified: false },
+    mfa: { enabled: true, verified: true },
     expiresAt: SESSION_EXPIRES_AT,
     ...overrides,
   };
@@ -233,6 +233,55 @@ afterEach(() => {
 });
 
 describe("server mode", () => {
+  it("shows global administration without requesting a fallback case when no matter is assigned", async () => {
+    routeFetch((url, init) => {
+      if (url.endsWith("/api/cases") && init?.method === undefined) {
+        return jsonResponse({ cases: [] });
+      }
+      if (url.endsWith("/api/admin/reviewers")) {
+        return jsonResponse({ reviewers: [] });
+      }
+      if (url.endsWith("/api/admin/account-audit")) {
+        return jsonResponse({ events: [] });
+      }
+      return null;
+    });
+
+    renderApp();
+    expect(
+      await screen.findByRole("heading", { name: "No matters assigned" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open a new matter" }),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/case")),
+    ).toBe(false);
+  });
+
+  it("shows a non-administrative empty state to a non-Senior with no matters", async () => {
+    routeFetch((url, init) => {
+      if (url.endsWith("/api/auth/session")) {
+        return jsonResponse({
+          ...sessionInfo(),
+          reviewer: { ...OKAFOR, role: "Claims Reviewer" },
+        });
+      }
+      if (url.endsWith("/api/cases") && init?.method === undefined) {
+        return jsonResponse({ cases: [] });
+      }
+      return null;
+    });
+
+    renderApp();
+    expect(
+      await screen.findByText(/must grant you access to a matter/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open a new matter" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("boots from the session + case endpoints and labels the mode honestly", async () => {
     routeFetch();
     renderApp();
@@ -945,6 +994,52 @@ describe("server mode", () => {
     expect(attempts).toBe(2);
   });
 
+  it("steps up from a decision without losing the draft", async () => {
+    routeFetch((url, init) => {
+      if (url.endsWith("/api/auth/session")) {
+        return jsonResponse(sessionInfo({ mfa: { enabled: true, verified: false } }));
+      }
+      if (url.endsWith("/api/auth/mfa/verify") && init?.method === "POST") {
+        return jsonResponse({ enabled: true, verified: true });
+      }
+      if (url.endsWith("/conflicts/cf-1/decisions") && init?.method === "POST") {
+        return jsonResponse(decisionResponse(), 201);
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+    renderApp();
+    await screen.findAllByText("Colgan Air Flight 3407");
+
+    await user.click(screen.getByRole("radio", { name: /Preserve both claims/ }));
+    const reasoning = screen.getByLabelText(/Reasoning note/);
+    await user.type(
+      reasoning,
+      "Preserve both accounts while counsel reconciles the timing evidence.",
+    );
+    await user.click(screen.getByRole("button", { name: "Save decision" }));
+
+    expect(screen.getByRole("heading", { name: "Verify MFA" })).toBeInTheDocument();
+    expect(reasoning).toHaveValue(
+      "Preserve both accounts while counsel reconciles the timing evidence.",
+    );
+
+    await user.type(screen.getByLabelText("MFA code"), "123456");
+    await user.click(screen.getByRole("button", { name: "Verify" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Verify MFA" })).not.toBeInTheDocument(),
+    );
+    const save = screen.getByRole("button", { name: "Save decision" });
+    expect(save).toHaveFocus();
+    expect(reasoning).toHaveValue(
+      "Preserve both accounts while counsel reconciles the timing evidence.",
+    );
+
+    await user.click(save);
+    expect(await screen.findByRole("status")).toHaveTextContent(/Decision recorded:/);
+  });
+
   it("revalidates on focus and clears loaded matter data when the session is revoked", async () => {
     let revoked = false;
     let sessionReads = 0;
@@ -1130,7 +1225,9 @@ describe("server mode", () => {
         init?.method === "POST" &&
         url.endsWith("/api/cases/case-3407/packets")
       ) {
-        expect(JSON.parse(init.body as string)).toEqual({ packetType: "internal" });
+        const body = JSON.parse(init.body as string);
+        expect(body.packetType).toBe("internal");
+        expect(body.idempotencyKey).toEqual(expect.any(String));
         return jsonResponse(
           {
             packetId: "pkt-srv-1",
@@ -1280,7 +1377,11 @@ describe("server mode", () => {
     const pastPackets = screen.getByRole("region", { name: "Past packets" });
     expect(await within(pastPackets).findByText(/1 stored packet/)).toBeInTheDocument();
 
-    await user.click(within(pastPackets).getByRole("button", { name: "Open stored packet" }));
+    await user.click(
+      within(pastPackets).getByRole("button", {
+        name: /Open production packet generated.*pkt-stored-1/,
+      }),
+    );
     expect(await screen.findByRole("region", { name: "Packet manifest" })).toBeInTheDocument();
     expect(screen.getByTitle("Evidence packet preview")).toHaveAttribute(
       "srcdoc",
@@ -1361,7 +1462,11 @@ describe("server mode", () => {
     await user.click(within(nav).getByRole("button", { name: /Evidence packet/ }));
     const pastPackets = screen.getByRole("region", { name: "Past packets" });
     await within(pastPackets).findByText(/1 stored packet/);
-    await user.click(within(pastPackets).getByRole("button", { name: "Open stored packet" }));
+    await user.click(
+      within(pastPackets).getByRole("button", {
+        name: /Open production packet generated.*pkt-tampered-1/,
+      }),
+    );
 
     const quarantine = await screen.findByRole("alert", { name: "Quarantined packet" });
     expect(quarantine).toHaveTextContent(/failed integrity verification and was not opened/i);

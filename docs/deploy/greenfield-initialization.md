@@ -23,8 +23,8 @@ work.
     "aircraft": "Airbus A320-200",
     "accidentDate": "2025-04-19",
     "location": "North Sea",
-    "matterType": "Accident litigation",
-    "status": "Active — evidence intake",
+    "matterType": "wrongful_death",
+    "status": "open",
     "docketRef": "MATTER-2025-001"
   },
   "initialSeniorCounsel": {
@@ -37,8 +37,9 @@ work.
 ```
 
 Do not put a password in this file. Unknown fields, duplicate JSON keys,
-non-Senior roles, malformed IDs, and future or invalid accident dates are
-rejected before the database is touched.
+non-Senior roles, malformed IDs, unsupported matter types, any initial status
+other than `open`, and future or invalid accident dates are rejected before the
+database is touched.
 
 ## 2. Build the image and start only Postgres
 

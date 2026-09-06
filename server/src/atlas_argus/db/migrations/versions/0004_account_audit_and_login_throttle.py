@@ -9,7 +9,17 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-from atlas_argus.db.guards import ACCOUNT_AUDIT_GUARD_SQL
+ACCOUNT_AUDIT_GUARD_SQL = """
+CREATE OR REPLACE FUNCTION forbid_account_audit_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'account_audit_event is append-only: % rejected', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS trg_account_audit_append_only ON account_audit_event;
+CREATE TRIGGER trg_account_audit_append_only
+BEFORE UPDATE OR DELETE ON account_audit_event
+FOR EACH ROW EXECUTE FUNCTION forbid_account_audit_mutation();
+"""
 
 revision: str = "0004"
 down_revision: Union[str, None] = "0003"

@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, postCaseSource } from "../api/client";
 import type { PrivilegeStatus, SourceDocument, SourceType } from "../domain/types";
@@ -64,11 +64,36 @@ export function SourceUploadForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const activeCaseId = useRef(caseId);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploadAbort = useRef<AbortController | null>(null);
 
   // Generated once per attempt and reused across retries of that same attempt,
   // so a retried upload returns the original result instead of creating a
   // second copy of the same document.
   const idempotencyKey = useRef<string | null>(null);
+
+  useEffect(() => {
+    uploadAbort.current?.abort();
+    uploadAbort.current = null;
+    activeCaseId.current = caseId;
+    idempotencyKey.current = null;
+    setFile(null);
+    setTitle("");
+    setType("official_report");
+    setOrigin("");
+    setCustodian("");
+    setDocketRef("");
+    setPrivilegeStatus("public");
+    setBusy(false);
+    setError(null);
+    setNotice(null);
+    if (fileInput.current) fileInput.current.value = "";
+    return () => {
+      uploadAbort.current?.abort();
+      uploadAbort.current = null;
+    };
+  }, [caseId]);
 
   const privilegedBlocked =
     WITHHOLDING.includes(privilegeStatus) && !canUploadPrivileged;
@@ -86,19 +111,30 @@ export function SourceUploadForm({
     setError(null);
     setNotice(null);
     idempotencyKey.current ??= crypto.randomUUID();
+    const submissionCaseId = caseId;
+    const submissionKey = idempotencyKey.current;
+    const controller = new AbortController();
+    uploadAbort.current = controller;
 
     try {
-      const response = await postCaseSource(caseId, {
-        title: title.trim(),
-        type,
-        origin: origin.trim(),
-        custodian: custodian.trim(),
-        docketRef: docketRef.trim() || null,
-        privilegeStatus,
-        originalFilename: file.name,
-        contentBase64: await fileToBase64(file),
-        idempotencyKey: idempotencyKey.current,
-      });
+      const contentBase64 = await fileToBase64(file);
+      if (activeCaseId.current !== submissionCaseId) return;
+      const response = await postCaseSource(
+        submissionCaseId,
+        {
+          title: title.trim(),
+          type,
+          origin: origin.trim(),
+          custodian: custodian.trim(),
+          docketRef: docketRef.trim() || null,
+          privilegeStatus,
+          originalFilename: file.name,
+          contentBase64,
+          idempotencyKey: submissionKey,
+        },
+        { signal: controller.signal },
+      );
+      if (activeCaseId.current !== submissionCaseId) return;
 
       const duplicates = response.possibleDuplicateSourceIds;
       if (duplicates.length > 0) {
@@ -116,6 +152,7 @@ export function SourceUploadForm({
       setDocketRef("");
       onUploaded(response.source, duplicates);
     } catch (caught) {
+      if (activeCaseId.current !== submissionCaseId) return;
       // The key is kept on failure so a retry is recognised as the same
       // upload rather than a new one.
       setError(
@@ -124,7 +161,8 @@ export function SourceUploadForm({
           : "Upload failed. Try again.",
       );
     } finally {
-      setBusy(false);
+      if (uploadAbort.current === controller) uploadAbort.current = null;
+      if (activeCaseId.current === submissionCaseId) setBusy(false);
     }
   }
 
@@ -139,6 +177,7 @@ export function SourceUploadForm({
 
       <label htmlFor={`${formId}-file`}>Document</label>
       <input
+        ref={fileInput}
         id={`${formId}-file`}
         type="file"
         accept="application/pdf,.pdf"
@@ -239,7 +278,8 @@ export function SourceUploadForm({
 
       {busy && (
         <p className="source-upload__hint" role="status">
-          Reading the document. Leaving this page will cancel the upload.
+          Reading the document. Leaving cancels this browser request; if the server
+          already accepted the document, processing may still finish in this matter.
         </p>
       )}
       {error && (

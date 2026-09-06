@@ -12,6 +12,7 @@ import { ReportsView } from "./components/views/ReportsView";
 import { AuditView } from "./components/views/AuditView";
 import { PacketExportView } from "./components/views/PacketExportView";
 import { AdminView } from "./components/views/AdminView";
+import { NewMatterForm } from "./components/NewMatterForm";
 
 export default function App() {
   const { state, retryBoot } = useStore();
@@ -30,9 +31,6 @@ export default function App() {
   if (state.passwordGate) {
     return <ChangePasswordPage forced={state.passwordGate === "forced"} />;
   }
-  if (state.mfaGate) {
-    return <MfaPage />;
-  }
   if (state.bootStatus === "error") {
     return (
       <div className="boot-screen" role="alert">
@@ -45,12 +43,47 @@ export default function App() {
     );
   }
 
+  if (state.dataMode === "server" && state.caseFile.id === "") {
+    const canAdminister =
+      state.sessionReviewer?.role === "Senior Aviation Counsel";
+    return (
+      <div className="app-shell">
+        <Header />
+        <main className="workspace view-stack wide" aria-label="Workspace">
+          <header className="view-header">
+            <h1>No matters assigned</h1>
+            <p className="muted">
+              {canAdminister
+                ? "Open a matter or administer reviewer accounts."
+                : "A Senior Aviation Counsel must grant you access to a matter."}
+            </p>
+          </header>
+          {canAdminister && (
+            <section className="panel" aria-label="Matter creation">
+              <NewMatterForm />
+            </section>
+          )}
+          {canAdminister && <AdminView />}
+        </main>
+        {state.mfaGate && <MfaPage />}
+      </div>
+    );
+  }
+
+  const showEvidenceRail = ["conflicts", "claims", "documents", "reports"].includes(
+    state.view,
+  );
+
   return (
     <div className="app-shell">
       <Header />
-      <div className="app-main">
+      <div className={`app-main${showEvidenceRail ? "" : " without-rail"}`}>
         <CaseSidebar />
-        <main className="workspace" aria-label="Workspace">
+        <main
+          key={`workspace-${state.caseFile.id}`}
+          className="workspace"
+          aria-label="Workspace"
+        >
           {state.view === "conflicts" && <ConflictReviewPanel />}
           {state.view === "claims" && <ClaimsView />}
           {state.view === "documents" && <DocumentsView />}
@@ -59,8 +92,9 @@ export default function App() {
           {state.view === "audit" && <AuditView />}
           {state.view === "admin" && <AdminView />}
         </main>
-        <EvidenceRail />
+        {showEvidenceRail && <EvidenceRail key={`evidence-${state.caseFile.id}`} />}
       </div>
+      {state.mfaGate && <MfaPage />}
     </div>
   );
 }

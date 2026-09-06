@@ -17,7 +17,7 @@ import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import uuid4
@@ -30,6 +30,8 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session
 
 from .. import auth
+from ..domain import matters as matter_rules
+from ..domain.types import ValidationFailure
 from ..config import (
     DEFAULT_SEED_PASSWORD,
     assert_production_config,
@@ -88,7 +90,7 @@ class MatterManifest(_StrictManifestModel):
     ]
     location: ShortText
     matter_type: ShortText = Field(alias="matterType")
-    status: ShortText
+    status: Literal["open"]
     docket_ref: Annotated[
         str,
         Field(alias="docketRef", min_length=2, max_length=200),
@@ -98,11 +100,15 @@ class MatterManifest(_StrictManifestModel):
     @classmethod
     def _valid_accident_date(cls, value: str) -> str:
         try:
-            parsed = date.fromisoformat(value)
-        except ValueError:
-            raise ValueError("accidentDate must be a valid ISO calendar date") from None
-        if parsed > date.today():
-            raise ValueError("accidentDate must not be in the future")
+            return matter_rules.validate_accident_date(value)
+        except ValidationFailure as exc:
+            raise ValueError(str(exc)) from None
+
+    @field_validator("matter_type")
+    @classmethod
+    def _valid_matter_type(cls, value: str) -> str:
+        if value not in matter_rules.MATTER_TYPES:
+            raise ValueError("matterType is not a supported matter type")
         return value
 
 

@@ -5,12 +5,41 @@ Revises: 0006
 Create Date: 2026-07-11
 """
 
-from typing import Sequence, Union
+import hashlib
+import json
+from typing import Any, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-from atlas_argus.integrity import revision_content_sha256
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def revision_content_sha256(
+    *,
+    case_id: str,
+    section_id: str,
+    title: str,
+    paragraph_ref: str,
+    text: str,
+    claim_ids: list[str],
+) -> str:
+    return _canonical_sha256(
+        {
+            "schema": "atlas_argus.report_section_revision_content.v1",
+            "caseId": case_id,
+            "sectionId": section_id,
+            "title": title,
+            "paragraphRef": paragraph_ref,
+            "text": text,
+            "claimIds": list(claim_ids),
+        }
+    )
 
 revision: str = "0007"
 down_revision: Union[str, None] = "0006"

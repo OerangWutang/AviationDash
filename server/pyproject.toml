@@ -30,7 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
-    "httpx>=0.27",
+    "httpx2>=2.7",
     "ruff>=0.6",
     # Reads the maintained production compose example so the single-worker
     # ingestion invariant is asserted rather than assumed.
