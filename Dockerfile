@@ -16,7 +16,7 @@ ENV VITE_DEMO_LOGINS=$DEMO_LOGINS
 RUN npm run build
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
-FROM python:3.14.6-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime
+FROM python:3.14.7-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS runtime
 WORKDIR /app
 RUN useradd --system --uid 999 --create-home app
 
